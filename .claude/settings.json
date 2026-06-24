@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash([ -f \"$PSQL\" ])",
+      "Read(//c/Program Files/PostgreSQL//**)",
+      "Bash(venv/Scripts/python.exe -c \"import django; django.setup\\(\\)\")",
+      "Bash(DJANGO_SETTINGS_MODULE=transit_project.settings venv/Scripts/python.exe manage.py check)",
+      "Bash(DJANGO_SETTINGS_MODULE=transit_project.settings venv/Scripts/python.exe -c ' *)",
+      "Bash(curl -s -X POST http://localhost:8080/graphql/ -H 'Content-Type: application/json' -d '{\"query\":\"{ stops { id name latitude longitude } }\"}')",
+      "Bash(curl -s -X POST http://localhost:8080/graphql/ -H 'Content-Type: application/json' -d '{\"query\":\"{ closestStop\\(latitude: -17.7863, longitude: -63.1812\\) { id name distance } }\"}')",
+      "Bash(curl -s -X POST http://localhost:8080/graphql/ -H 'Content-Type: application/json' -d '{\"query\":\"{ stops { id name } }\"}')",
+      "Bash(curl -s -X POST http://localhost:8080/graphql/ -H 'Content-Type: application/json' -d '{\"query\":\"{ closestStop\\(latitude: -17.7863, longitude: -63.1812\\) { id name distance routes { name } } }\"}')",
+      "Bash(DJANGO_SETTINGS_MODULE=transit_project.settings venv/Scripts/python.exe manage.py test --verbosity 2)",
+      "Bash(DJANGO_SETTINGS_MODULE=transit_project.settings venv/Scripts/python.exe manage.py seed_osm --timeout 120)",
+      "Bash(curl -s -X POST http://localhost:8080/graphql/ -H 'Content-Type: application/json' -d '{\"query\":\"{ routes { id name color } }\"}')",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\)['data']['routes']; print\\('LINEAS:', len\\(d\\)\\); [print\\(' -', r['name'], r['color']\\) for r in d[:6]]\")",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\)['data']['stops']; print\\('PARADAS:', len\\(d\\)\\); [print\\(' -', s['name']\\) for s in d[:5]]\")",
+      "Bash(curl -s -X POST http://localhost:8080/graphql/ -H 'Content-Type: application/json' -d '{\"query\":\"{ closestStop\\(latitude: -17.7833, longitude: -63.1821\\) { name distance routes { name } } }\"}')",
+      "Bash(python -m json.tool)",
+      "Bash(export DJANGO_SETTINGS_MODULE=transit_project.settings)",
+      "Bash(venv/Scripts/python.exe manage.py makemigrations --no-input)",
+      "Bash(venv/Scripts/python.exe manage.py migrate)",
+      "Bash(venv/Scripts/python.exe manage.py seed_osm --timeout 120)",
+      "Bash(venv/Scripts/python.exe manage.py test)",
+      "Bash(DJANGO_SETTINGS_MODULE=transit_project.settings venv/Scripts/python.exe manage.py runserver 8080)",
+      "Bash(curl -s -X POST http://localhost:8080/graphql/ -H 'Content-Type: application/json' -d '{\"query\":\"{ stops { id name latitude longitude routes { name color } } }\"}')",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\)['data']['stops']; print\\('paradas:',len\\(d\\)\\); s=[x for x in d if x['routes']][0]; print\\('ejemplo con lineas:', s['name'], '->', [r['name'] for r in s['routes']]\\)\")",
+      "Bash(curl -s -X POST http://localhost:8080/graphql/ -H 'Content-Type: application/json' -d '{\"query\":\"{ routes { name color sentido geomGeojson } }\"}')",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\)['data']['routes']; print\\('rutas:',len\\(d\\)\\); print\\('ejemplo:', d[0]['name'], d[0]['sentido'], d[0]['color']\\)\")",
+      "Bash(curl -s -X POST http://localhost:8080/graphql/ -H 'Content-Type: application/json' -d '{\"query\":\"{ lineas { codigo name rutas { sentido paradas { orden parada { name } } } } }\"}')",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\)['data']['lineas']; print\\('lineas:',len\\(d\\)\\); l=[x for x in d if x['rutas'] and x['rutas'][0]['paradas']][0]; print\\('ejemplo:', l['name'], '| ruta', l['rutas'][0]['sentido'], '| primeras paradas:', [\\(p['orden'],p['parada']['name'][:25]\\) for p in l['rutas'][0]['paradas'][:3]]\\)\")",
+      "WebSearch",
+      "WebFetch(domain:guiaurbana.gmsantacruz.gob.bo)",
+      "WebFetch(domain:microcruz.tel.bo)",
+      "Bash(curl -s \"https://router.project-osrm.org/route/v1/driving/-63.1900,-17.7780;-63.1812,-17.7863?overview=full&geometries=geojson\")",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('code:', d.get\\('code'\\)\\); r=d['routes'][0]; print\\('distancia calles \\(m\\):', round\\(r['distance'],1\\)\\); print\\('puntos en el trazado:', len\\(r['geometry']['coordinates']\\)\\)\")",
+      "WebFetch(domain:cruzero.net)"
+    ]
+  }
+}
