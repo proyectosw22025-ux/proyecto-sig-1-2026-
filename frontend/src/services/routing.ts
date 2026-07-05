@@ -1,13 +1,9 @@
-// Servicio de ruteo: calcula el camino por CALLES entre dos puntos usando OSRM
-// (Open Source Routing Machine), servidor público y gratuito de OpenStreetMap.
-// Sin API key. Se usa para dibujar la ruta real del usuario hasta la parada,
-// en vez de una recta que cruza por encima de las manzanas.
-//
-// Nota: el servidor demo público de OSRM expone el perfil 'driving' (calles
-// vehiculares). Para una caminata corta a la parada es una aproximación válida
-// y visualmente correcta (sigue la red de calles).
+// Servicio de ruteo PEATONAL: calcula el camino a pie entre dos puntos usando
+// el servidor OSRM de OpenStreetMap-DE con perfil 'foot'. Sin API key.
+// A diferencia del perfil vehicular, NO respeta sentidos de circulación
+// (contrarutas), porque una persona caminando puede ir en cualquier dirección.
 
-const OSRM_URL = 'https://router.project-osrm.org/route/v1/driving';
+const OSRM_URL = 'https://routing.openstreetmap.de/routed-foot/route/v1/foot';
 
 export interface StreetRoute {
   // Polilínea en formato Leaflet [lat, lng]

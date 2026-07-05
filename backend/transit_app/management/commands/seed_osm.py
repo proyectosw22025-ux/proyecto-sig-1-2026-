@@ -22,8 +22,8 @@ from django.db.models import F
 from transit_app.models import LineaMicro, Ruta, Parada, RutaParada
 import requests
 
-# Umbral de cercanía parada<->trazado, en grados (~55 m a la latitud de Santa Cruz)
-UMBRAL_PROXIMIDAD_GRADOS = 0.0005
+# Umbral de cercanía parada<->trazado, en grados (~88 m a la latitud de Santa Cruz)
+UMBRAL_PROXIMIDAD_GRADOS = 0.0008
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 SCZ_BBOX = (-18.05, -63.35, -17.65, -63.00)  # sur, oeste, norte, este

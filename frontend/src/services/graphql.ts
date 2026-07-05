@@ -53,7 +53,9 @@ export const graphqlService = {
           id
           name
           color
+          sentido
           geomGeojson
+          stopIds
         }
       }
     `;
@@ -88,12 +90,31 @@ export const graphqlService = {
           id
           name
           color
+          sentido
           geomGeojson
+          stopIds
         }
       }
     `;
     const data = await queryGraphQL(query, { queryStr });
     return data.searchRoutes;
+  },
+
+  async getRoutesBetween(originLat: number, originLng: number, destLat: number, destLng: number) {
+    const query = `
+      query RoutesBetween($oLat: Float!, $oLng: Float!, $dLat: Float!, $dLng: Float!) {
+        routesBetween(originLat: $oLat, originLng: $oLng, destLat: $dLat, destLng: $dLng) {
+          id
+          name
+          color
+          sentido
+          geomGeojson
+          stopIds
+        }
+      }
+    `;
+    const data = await queryGraphQL(query, { oLat: originLat, oLng: originLng, dLat: destLat, dLng: destLng });
+    return data.routesBetween;
   },
 
   async getClosestStop(latitude: number, longitude: number) {

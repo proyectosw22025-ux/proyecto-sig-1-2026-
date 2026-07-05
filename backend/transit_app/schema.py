@@ -1,9 +1,21 @@
 import strawberry
 import math
+import colorsys
 from typing import List, Optional
 from .models import LineaMicro, Ruta, Parada
 from django.contrib.gis.geos import Point
 from django.contrib.gis.db.models.functions import Distance
+
+
+def _color_for_ruta(ruta_id: int) -> str:
+    """
+    Color único y estable por ruta. Usa el ángulo áureo sobre el matiz (HSL)
+    para repartir colores bien diferenciados, de modo que aunque dos rutas
+    pertenezcan a la misma línea (ej. 3 recorridos de la Línea 1) se distingan.
+    """
+    hue = ((ruta_id * 137.508) % 360) / 360.0
+    r, g, b = colorsys.hls_to_rgb(hue, 0.55, 0.62)
+    return '#{:02x}{:02x}{:02x}'.format(int(r * 255), int(g * 255), int(b * 255))
 
 
 def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -37,6 +49,7 @@ class RouteType:
     color: str           # color de la línea
     sentido: str
     geom_geojson: str
+    stop_ids: List[strawberry.ID]  # IDs de las paradas de esta ruta (para resaltarlas)
 
 
 @strawberry.type
@@ -97,9 +110,10 @@ def _route_type(ruta: Ruta) -> RouteType:
     return RouteType(
         id=ruta.id,
         name=display,
-        color=ruta.linea.color,
+        color=_color_for_ruta(ruta.id),   # color único por ruta (no por línea)
         sentido=ruta.sentido,
         geom_geojson=ruta.geom.geojson if ruta.geom else "",
+        stop_ids=[str(rp.parada_id) for rp in ruta.ruta_paradas.all()],
     )
 
 
@@ -125,7 +139,8 @@ class Query:
 
     @strawberry.field
     def routes(self) -> List[RouteType]:
-        return [_route_type(r) for r in Ruta.objects.select_related('linea').all()]
+        qs = Ruta.objects.select_related('linea').prefetch_related('ruta_paradas')
+        return [_route_type(r) for r in qs.all()]
 
     @strawberry.field
     def lineas(self) -> List[LineaDetalleType]:
@@ -165,7 +180,31 @@ class Query:
         ) | Ruta.objects.select_related('linea').filter(
             linea__codigo__icontains=query
         )
-        return [_route_type(r) for r in qs.distinct()]
+        qs = qs.distinct().prefetch_related('ruta_paradas')
+        return [_route_type(r) for r in qs]
+
+    @strawberry.field
+    def routes_between(
+        self,
+        origin_lat: float, origin_lng: float,
+        dest_lat: float, dest_lng: float,
+        radius_m: float = 500.0,
+    ) -> List[RouteType]:
+        """
+        Líneas que sirven para ir del origen al destino: aquellas cuyo recorrido
+        pasa cerca (radius_m) TANTO del origen COMO del destino. Pensado para
+        peatones, así que no considera sentidos de circulación.
+        """
+        origin = Point(origin_lng, origin_lat, srid=4326)
+        dest = Point(dest_lng, dest_lat, srid=4326)
+        deg = radius_m / 111000.0  # metros -> grados aprox. (suficiente a esta latitud)
+        qs = (
+            Ruta.objects.select_related('linea').prefetch_related('ruta_paradas')
+            .filter(geom__dwithin=(origin, deg))
+            .filter(geom__dwithin=(dest, deg))
+            .distinct()
+        )
+        return [_route_type(r) for r in qs]
 
     @strawberry.field
     def closest_stop(self, latitude: float, longitude: float) -> Optional[StopType]:
