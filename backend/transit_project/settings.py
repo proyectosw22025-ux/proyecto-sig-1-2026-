@@ -13,14 +13,28 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 from pathlib import Path
 import os
 import sys
+import glob
 
-# Configurar rutas específicas de Windows para GDAL/GEOS en GeoDjango
+# Configurar rutas específicas de Windows para GDAL/GEOS en GeoDjango.
+# Se detecta automáticamente cualquier versión de PostgreSQL instalada
+# (14, 16, 17, ...) y el nombre real de la DLL de GDAL, en vez de asumir
+# una ruta y versión fijas, para que funcione igual en distintas máquinas.
 if os.name == 'nt':
-    PG_BIN = r"C:\Program Files\PostgreSQL\17\bin"
-    if os.path.exists(PG_BIN):
-        os.environ['PATH'] = PG_BIN + os.path.pathsep + os.environ['PATH']
-        GDAL_LIBRARY_PATH = os.path.join(PG_BIN, 'libgdal-35.dll')
-        GEOS_LIBRARY_PATH = os.path.join(PG_BIN, 'libgeos_c.dll')
+    for _pg_bin in sorted(glob.glob(r"C:\Program Files\PostgreSQL\*\bin"), reverse=True):
+        _gdal_dlls = glob.glob(os.path.join(_pg_bin, 'libgdal-*.dll'))
+        _geos_dll = os.path.join(_pg_bin, 'libgeos_c.dll')
+        if _gdal_dlls and os.path.exists(_geos_dll):
+            os.environ['PATH'] = _pg_bin + os.path.pathsep + os.environ['PATH']
+            GDAL_LIBRARY_PATH = _gdal_dlls[0]
+            GEOS_LIBRARY_PATH = _geos_dll
+            break
+
+# Permite forzar rutas manualmente vía variables de entorno si el
+# autodetect anterior no encuentra las DLLs correctas.
+if os.environ.get('GDAL_LIBRARY_PATH'):
+    GDAL_LIBRARY_PATH = os.environ['GDAL_LIBRARY_PATH']
+if os.environ.get('GEOS_LIBRARY_PATH'):
+    GEOS_LIBRARY_PATH = os.environ['GEOS_LIBRARY_PATH']
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
