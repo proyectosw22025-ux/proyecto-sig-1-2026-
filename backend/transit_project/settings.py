@@ -87,12 +87,12 @@ WSGI_APPLICATION = 'transit_project.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.contrib.gis.db.backends.postgis', # Motor de base de datos PostGIS
-        'NAME': 'transporte_db',                              # Nombre de la base de datos
-        'USER': 'postgres',                                   # Usuario por defecto de PostgreSQL
-        'PASSWORD': 'josephfgj',                               # Contraseña de PostgreSQL
-        'HOST': 'localhost',
-        'PORT': '5432',
+        'ENGINE': 'django.contrib.gis.db.backends.postgis',       # Motor de base de datos PostGIS
+        'NAME': os.environ.get('DB_NAME', 'transporte_db'),       # Nombre de la base de datos
+        'USER': os.environ.get('DB_USER', 'postgres'),            # Usuario por defecto de PostgreSQL
+        'PASSWORD': os.environ.get('DB_PASSWORD', 'josephfgj'),   # Contraseña de PostgreSQL
+        'HOST': os.environ.get('DB_HOST', 'localhost'),           # 'db' cuando corre en Docker
+        'PORT': os.environ.get('DB_PORT', '5432'),
     }
 }
 

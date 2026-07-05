@@ -50,7 +50,13 @@
       "Bash(curl -s --max-time 25 \"https://routing.openstreetmap.de/routed-foot/route/v1/foot/-63.1900,-17.7780;-63.1812,-17.7863?overview=full&geometries=geojson\")",
       "PowerShell($c = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue; if \\($c\\) { $c | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue } }; \"stopped\")",
       "Bash(curl -s -X POST http://localhost:8080/graphql/ -H 'Content-Type: application/json' -d '{\"query\":\"{ routesBetween\\(originLat: -17.7863, originLng: -63.1812, destLat: -17.7685, destLng: -63.1812\\) { name color } }\"}')",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git remote *)",
+      "Bash(git push *)",
+      "Bash(git config *)",
+      "Bash(git rm *)",
+      "Bash(awk '{print $1}')"
     ]
   }
 }

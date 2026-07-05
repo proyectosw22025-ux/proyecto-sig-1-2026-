@@ -25,9 +25,22 @@ Two independent apps that talk over GraphQL:
 
 ## Backend setup & commands
 
+### Option A — Docker (recommended for a second machine / teammate)
+
+`docker-compose.yml` (repo root) runs PostGIS + the Django backend in containers, so no native Postgres/GDAL install is needed:
+
+```bash
+docker compose up --build              # starts db (postgis/postgis:16-3.4) + backend, runs migrate automatically
+docker compose exec backend python manage.py seed_db     # or seed_osm — same seeders as native
+```
+
+Backend is reachable at `http://localhost:8080/graphql/` same as native. [backend/transit_project/settings.py](backend/transit_project/settings.py) reads `DB_HOST`/`DB_NAME`/`DB_USER`/`DB_PASSWORD`/`DB_PORT` from the environment (compose sets `DB_HOST=db`), falling back to the hardcoded local defaults when unset — native setup below is unaffected.
+
+### Option B — Native
+
 Requires **PostgreSQL with the PostGIS extension** (DB `transporte_db`, user `postgres`) and the native **GDAL/GEOS** libraries. On Windows, [settings.py](backend/transit_project/settings.py) auto-locates them under `C:\Program Files\PostgreSQL\17\bin` (`libgdal-35.dll`, `libgeos_c.dll`) — adjust that path if PostgreSQL is installed elsewhere.
 
-Run from `backend/` with the venv active (`venv\Scripts\activate` on Windows):
+Run from `backend/` with the venv active (`venv\Scripts\activate` on Windows). Note `backend/venv/` is gitignored — each machine creates its own with `python -m venv venv`:
 
 ```bash
 pip install -r requirements.txt        # Django, strawberry-graphql[django], psycopg2-binary, requests, django-cors-headers
