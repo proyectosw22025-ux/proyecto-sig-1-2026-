@@ -90,6 +90,15 @@ class RutaDetalleType:
 
 
 @strawberry.type
+class RouteMatchType:
+    """Resultado de routesBetween: una ruta candidata para un trayecto origen->destino."""
+    route: RouteType
+    exact: bool               # False si es una aproximación (fallback, ver routes_between)
+    distance_origin_m: float  # Distancia del trazado al origen, en metros
+    distance_dest_m: float    # Distancia del trazado al destino, en metros
+
+
+@strawberry.type
 class LineaDetalleType:
     """Línea con todas sus rutas (jerarquía Línea -> Rutas -> Paradas)."""
     id: strawberry.ID
@@ -189,22 +198,56 @@ class Query:
         origin_lat: float, origin_lng: float,
         dest_lat: float, dest_lng: float,
         radius_m: float = 500.0,
-    ) -> List[RouteType]:
+    ) -> List[RouteMatchType]:
         """
         Líneas que sirven para ir del origen al destino: aquellas cuyo recorrido
         pasa cerca (radius_m) TANTO del origen COMO del destino. Pensado para
         peatones, así que no considera sentidos de circulación.
+
+        Si nada cumple ese criterio, amplía el radio progresivamente y, si aun
+        así no hay coincidencias, devuelve como aproximación las líneas cuyo
+        trazado quede combinadamente más cerca de origen y destino — nunca
+        deja al usuario sin ninguna opción (siempre que existan rutas en la BD).
         """
         origin = Point(origin_lng, origin_lat, srid=4326)
         dest = Point(dest_lng, dest_lat, srid=4326)
-        deg = radius_m / 111000.0  # metros -> grados aprox. (suficiente a esta latitud)
-        qs = (
-            Ruta.objects.select_related('linea').prefetch_related('ruta_paradas')
-            .filter(geom__dwithin=(origin, deg))
-            .filter(geom__dwithin=(dest, deg))
-            .distinct()
+
+        base_qs = Ruta.objects.select_related('linea').prefetch_related('ruta_paradas').annotate(
+            dist_origen=Distance('geom', origin), dist_destino=Distance('geom', dest),
         )
-        return [_route_type(r) for r in qs]
+
+        radio_actual = radius_m
+        for _ in range(4):  # ej. 500m, 1000m, 2000m, 4000m
+            deg = radio_actual / 111000.0  # metros -> grados aprox. (suficiente a esta latitud)
+            encontrados = list(
+                base_qs.filter(geom__dwithin=(origin, deg)).filter(geom__dwithin=(dest, deg))
+            )
+            if encontrados:
+                return [
+                    RouteMatchType(
+                        route=_route_type(r), exact=True,
+                        distance_origin_m=round(r.dist_origen.m, 1),
+                        distance_dest_m=round(r.dist_destino.m, 1),
+                    )
+                    for r in encontrados
+                ]
+            radio_actual *= 2
+
+        # Fallback: ninguna línea pasa realmente cerca de ambos puntos. Se
+        # muestran las 3 más cercanas por distancia combinada, marcadas como
+        # aproximadas, para que el usuario siempre vea al menos una opción.
+        todas = list(base_qs)
+        if not todas:
+            return []
+        mejores = sorted(todas, key=lambda r: r.dist_origen.m + r.dist_destino.m)[:3]
+        return [
+            RouteMatchType(
+                route=_route_type(r), exact=False,
+                distance_origin_m=round(r.dist_origen.m, 1),
+                distance_dest_m=round(r.dist_destino.m, 1),
+            )
+            for r in mejores
+        ]
 
     @strawberry.field
     def closest_stop(self, latitude: float, longitude: float) -> Optional[StopType]:

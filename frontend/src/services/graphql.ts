@@ -104,12 +104,17 @@ export const graphqlService = {
     const query = `
       query RoutesBetween($oLat: Float!, $oLng: Float!, $dLat: Float!, $dLng: Float!) {
         routesBetween(originLat: $oLat, originLng: $oLng, destLat: $dLat, destLng: $dLng) {
-          id
-          name
-          color
-          sentido
-          geomGeojson
-          stopIds
+          exact
+          distanceOriginM
+          distanceDestM
+          route {
+            id
+            name
+            color
+            sentido
+            geomGeojson
+            stopIds
+          }
         }
       }
     `;

@@ -7,6 +7,13 @@ export interface RouteType {
   stopIds?: string[];    // IDs de las paradas que pertenecen a esta ruta
 }
 
+export interface RouteMatchType {
+  route: RouteType;
+  exact: boolean;          // false = aproximación (fallback), no hay línea directa real
+  distanceOriginM: number; // metros del trazado al origen
+  distanceDestM: number;   // metros del trazado al destino
+}
+
 export interface StopType {
   id: string;
   name: string;

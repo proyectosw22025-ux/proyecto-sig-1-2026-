@@ -21,7 +21,7 @@ import {
 import { graphqlService } from './services/graphql';
 import { geocodeAddress } from './services/geocoding';
 import { getStreetRoute } from './services/routing';
-import type { RouteType, StopType } from './types';
+import type { RouteType, StopType, RouteMatchType } from './types';
 
 // Solución para iconos de Leaflet por defecto que se rompen con Vite
 // @ts-ignore
@@ -31,6 +31,78 @@ L.Icon.Default.mergeOptions({
   iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
   shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
 });
+
+// --- Flechas de dirección sobre el trazado de una ruta ----------------------
+// Cantidad fija de flechas por ruta (independiente de su longitud), ubicadas
+// a estas fracciones del trazado. Fija el total en `rutas_visibles * 3`
+// marcadores como máximo, para que "Mostrar todas" no sature el mapa.
+const ROUTE_ARROW_FRACTIONS = [0.15, 0.5, 0.85];
+
+// Distancia aproximada entre dos puntos [lat,lng] (Haversine), en metros.
+function haversineMeters(a: [number, number], b: [number, number]): number {
+  const R = 6371000;
+  const dLat = (b[0] - a[0]) * Math.PI / 180;
+  const dLng = (b[1] - a[1]) * Math.PI / 180;
+  const s = Math.sin(dLat / 2) ** 2
+    + Math.cos(a[0] * Math.PI / 180) * Math.cos(b[0] * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(s));
+}
+
+// Rumbo de a -> b en grados (0 = norte, sentido horario), para rotar la flecha.
+function bearingDegrees(a: [number, number], b: [number, number]): number {
+  const lat1 = a[0] * Math.PI / 180, lat2 = b[0] * Math.PI / 180;
+  const dLng = (b[1] - a[1]) * Math.PI / 180;
+  const y = Math.sin(dLng) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+// Coloca un puñado fijo de flechitas triangulares (ROUTE_ARROW_FRACTIONS) a
+// lo largo de `latlngs`, apuntando en el sentido en que están ordenados los
+// puntos (útil para distinguir Ida de Vuelta en el mapa). El número de
+// flechas por ruta es constante sin importar su longitud, para que "Mostrar
+// todas" no genere miles de marcadores. Se agregan a `group` para que
+// aparezcan/desaparezcan junto con la línea a la que pertenecen.
+function addDirectionArrows(latlngs: [number, number][], color: string, group: L.LayerGroup) {
+  if (latlngs.length < 2) return;
+
+  // Longitud acumulada hasta cada vértice, para ubicar cada fracción por distancia real
+  const acumuladas = [0];
+  for (let i = 1; i < latlngs.length; i++) {
+    acumuladas.push(acumuladas[i - 1] + haversineMeters(latlngs[i - 1], latlngs[i]));
+  }
+  const largoTotal = acumuladas[acumuladas.length - 1];
+  if (largoTotal === 0) return;
+
+  ROUTE_ARROW_FRACTIONS.forEach((fraccion) => {
+    const objetivo = largoTotal * fraccion;
+    let i = 1;
+    while (i < acumuladas.length - 1 && acumuladas[i] < objetivo) i++;
+
+    const inicio = latlngs[i - 1];
+    const fin = latlngs[i];
+    const largoTramo = acumuladas[i] - acumuladas[i - 1];
+    const t = largoTramo > 0 ? (objetivo - acumuladas[i - 1]) / largoTramo : 0;
+    const lat = inicio[0] + (fin[0] - inicio[0]) * t;
+    const lng = inicio[1] + (fin[1] - inicio[1]) * t;
+    const angulo = bearingDegrees(inicio, fin);
+
+    const icon = L.divIcon({
+      className: 'route-direction-arrow',
+      html: `<div style="
+          transform: rotate(${angulo}deg);
+          width: 0; height: 0;
+          border-left: 5px solid transparent;
+          border-right: 5px solid transparent;
+          border-bottom: 10px solid ${color};
+          filter: drop-shadow(0 0 1.5px white);
+        "></div>`,
+      iconSize: [10, 10],
+      iconAnchor: [5, 5],
+    });
+    L.marker([lat, lng], { icon, interactive: false, keyboard: false }).addTo(group);
+  });
+}
 
 export default function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>('dark');
@@ -54,7 +126,8 @@ export default function App() {
   const [closestStop, setClosestStop] = useState<StopType | null>(null);
 
   // Resultado del planificador: líneas que conectan origen y destino
-  const [tripRoutes, setTripRoutes] = useState<RouteType[] | null>(null);
+  // (`exact: false` = no hay línea directa real, se muestra la más cercana)
+  const [tripRoutes, setTripRoutes] = useState<RouteMatchType[] | null>(null);
   const [tripLoading, setTripLoading] = useState(false);
   const [tripError, setTripError] = useState<string | null>(null);
 
@@ -66,12 +139,19 @@ export default function App() {
   // Mostrar/ocultar la caja de instrucciones del mapa
   const [showInstructions, setShowInstructions] = useState(true);
 
+  // Filtros de visualización (aplican en ambas pestañas y a cualquier ruta
+  // visible, venga de "Mostrar todas", una línea individual o una parada
+  // seleccionada). Apagados por defecto para no saturar el mapa.
+  const [showRouteStops, setShowRouteStops] = useState(false);
+  const [showRouteArrows, setShowRouteArrows] = useState(false);
+
   const mapRef = useRef<L.Map | null>(null);
   const stopsClusterGroupRef = useRef<L.LayerGroup | null>(null);
   const routesLayerGroupRef = useRef<L.LayerGroup | null>(null);
   const routeStopsLayerRef = useRef<L.LayerGroup | null>(null);
   const stopMarkersRef = useRef<Record<string, L.Marker>>({});
-  const highlightedRouteIdRef = useRef<string | null>(null);
+  // Espejo de showRouteArrows para leerlo dentro de plotRoutes sin re-crearla
+  const showRouteArrowsRef = useRef(false);
   // Espejo de visibleRoutes para leer el estado actual desde callbacks de Leaflet
   const visibleRoutesRef = useRef<Record<string, boolean>>({});
   const originMarkerRef = useRef<L.Marker | null>(null);
@@ -200,6 +280,7 @@ export default function App() {
 
       plotStops(stopsData, stopVis);
       plotRoutes(routesData, routeVis);
+      refreshRouteStopsOverlay(routesData, routeVis);
     } catch (error) {
       console.error("Error cargando datos del backend:", error);
     }
@@ -342,6 +423,16 @@ export default function App() {
 
         group.addLayer(geojsonLayer);
         lineObjectsRef.current[route.id] = geojsonLayer;
+
+        // Flechas de dirección (solo si el filtro está activo): el trazado es
+        // un LineString con coords [lng,lat] en el orden real de circulación
+        // (útil para distinguir Ida de Vuelta).
+        if (showRouteArrowsRef.current && geom.type === 'LineString' && Array.isArray(geom.coordinates)) {
+          const latlngs: [number, number][] = geom.coordinates.map(
+            (c: [number, number]) => [c[1], c[0]],
+          );
+          addDirectionArrows(latlngs, route.color, group);
+        }
       } catch (e) {
         console.error(`Error parseando geometría de la ruta ${route.name}:`, e);
       }
@@ -350,19 +441,10 @@ export default function App() {
 
   // Conmutar visibilidad de una línea
   const toggleRouteVisibility = (route: RouteType) => {
-    const nuevoVisible = !visibleRoutes[route.id];
-    const updated = { ...visibleRoutes, [route.id]: nuevoVisible };
+    const updated = { ...visibleRoutes, [route.id]: !visibleRoutes[route.id] };
     setVisibleRoutes(updated);
     plotRoutes(routes, updated);
-
-    if (nuevoVisible) {
-      // Al mostrar la línea, resaltar sus paradas
-      highlightRouteStops(route);
-    } else if (highlightedRouteIdRef.current === route.id) {
-      // Al ocultarla, quitar también sus paradas resaltadas
-      routeStopsLayerRef.current?.clearLayers();
-      highlightedRouteIdRef.current = null;
-    }
+    refreshRouteStopsOverlay(routes, updated);
   };
 
   // Alternar una línea de los resultados del planificador (Ver ruta / Ocultar ruta)
@@ -371,27 +453,25 @@ export default function App() {
       const updated = { ...visibleRoutes, [route.id]: false };
       setVisibleRoutes(updated);
       plotRoutes(routes, updated);
-      if (highlightedRouteIdRef.current === route.id) {
-        routeStopsLayerRef.current?.clearLayers();
-        highlightedRouteIdRef.current = null;
-      }
+      refreshRouteStopsOverlay(routes, updated);
     } else {
-      focusRoute(route);  // dibuja, resalta y centra
+      focusRoute(route);  // dibuja y centra
     }
   };
 
-  // Mostrar y enfocar una línea: dibuja su ruta (si estaba oculta), centra el
-  // mapa en ella y la resalta. Es el corazón del modo on-demand.
+  // Mostrar y enfocar una línea: dibuja su ruta (si estaba oculta) y centra el
+  // mapa en ella. Es el corazón del modo on-demand.
   const focusRoute = (route: RouteType) => {
     const map = mapRef.current;
     if (!map) return;
 
     // Asegurar que la ruta esté dibujada antes de enfocarla
     let lineLayer = lineObjectsRef.current[route.id];
+    let visibilidadActual = visibleRoutes;
     if (!lineLayer) {
-      const updated = { ...visibleRoutes, [route.id]: true };
-      setVisibleRoutes(updated);
-      plotRoutes(routes, updated);           // plotRoutes es síncrono
+      visibilidadActual = { ...visibleRoutes, [route.id]: true };
+      setVisibleRoutes(visibilidadActual);
+      plotRoutes(routes, visibilidadActual);   // plotRoutes es síncrono
       lineLayer = lineObjectsRef.current[route.id];
     }
 
@@ -403,32 +483,56 @@ export default function App() {
       }, 3000);
     }
 
-    // Resaltar las paradas que pertenecen a esta ruta
-    highlightRouteStops(route);
+    refreshRouteStopsOverlay(routes, visibilidadActual);
   };
 
-  // Resaltar (con círculos del color de la línea) las paradas de una ruta
-  const highlightRouteStops = (route: RouteType) => {
+  // Redibuja el overlay de paradas de TODAS las rutas actualmente visibles
+  // (no solo una): cada parada se pinta con el color de la primera línea
+  // visible que pasa por ella. Solo dibuja algo si showRouteStops está activo
+  // — es el filtro que evita saturar el mapa cuando hay muchas rutas a la vez.
+  const refreshRouteStopsOverlay = (
+    routesList: RouteType[],
+    visibility: Record<string, boolean>,
+  ) => {
     const layer = routeStopsLayerRef.current;
     if (!layer) return;
     layer.clearLayers();
-    highlightedRouteIdRef.current = route.id;
+    if (!showRouteStops) return;
 
-    const idSet = new Set(route.stopIds ?? []);
-    stops
-      .filter((s) => idSet.has(s.id))
-      .forEach((s) => {
-        L.circleMarker([s.latitude, s.longitude], {
-          radius: 7,
-          color: '#ffffff',
-          weight: 2,
-          fillColor: route.color,
-          fillOpacity: 1,
-        })
-          .bindPopup(`<strong>${s.name}</strong><br><span style="font-size:11px;color:${route.color}">${route.name}</span>`)
-          .addTo(layer);
+    const colorPorParada = new Map<string, string>();
+    routesList.forEach((r) => {
+      if (!visibility[r.id]) return;
+      (r.stopIds ?? []).forEach((stopId) => {
+        if (!colorPorParada.has(stopId)) colorPorParada.set(stopId, r.color);
       });
+    });
+    if (colorPorParada.size === 0) return;
+
+    stops.forEach((s) => {
+      const color = colorPorParada.get(s.id);
+      if (!color) return;
+      L.circleMarker([s.latitude, s.longitude], {
+        radius: 7, color: '#ffffff', weight: 2, fillColor: color, fillOpacity: 1,
+      })
+        .bindPopup(`<strong>${s.name}</strong>`)
+        .addTo(layer);
+    });
   };
+
+  // Al cambiar el filtro de flechas, redibujar las rutas actualmente visibles
+  // (agrega/quita las flechas sin tocar qué líneas están mostradas).
+  useEffect(() => {
+    showRouteArrowsRef.current = showRouteArrows;
+    plotRoutes(routes, visibleRoutesRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showRouteArrows]);
+
+  // Al cambiar el filtro de paradas, refrescar el overlay con las rutas
+  // actualmente visibles (sin tocar qué líneas están mostradas).
+  useEffect(() => {
+    refreshRouteStopsOverlay(routes, visibleRoutesRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showRouteStops]);
 
   // Dibujar en el mapa todas las rutas que pasan por una parada seleccionada
   const showStopRoutes = (stop: StopType) => {
@@ -439,6 +543,7 @@ export default function App() {
     relevantes.forEach((r) => { vis[r.id] = true; });
     setVisibleRoutes(vis);
     plotRoutes(routes, vis);
+    refreshRouteStopsOverlay(routes, vis);
 
     // Ajustar la vista para abarcar la parada y todas sus rutas
     const map = mapRef.current;
@@ -460,8 +565,7 @@ export default function App() {
       .forEach((r) => { vis[r.id] = false; });
     setVisibleRoutes(vis);
     plotRoutes(routes, vis);
-    routeStopsLayerRef.current?.clearLayers();
-    highlightedRouteIdRef.current = null;
+    refreshRouteStopsOverlay(routes, vis);
   };
 
   // Mostrar TODAS las rutas en el mapa
@@ -470,6 +574,7 @@ export default function App() {
     routes.forEach((r) => { all[r.id] = true; });
     setVisibleRoutes(all);
     plotRoutes(routes, all);
+    refreshRouteStopsOverlay(routes, all);
   };
 
   // Ocultar todas las líneas dibujadas y sus paradas resaltadas
@@ -478,22 +583,21 @@ export default function App() {
     routes.forEach((r) => { cleared[r.id] = false; });
     setVisibleRoutes(cleared);
     plotRoutes(routes, cleared);
-    routeStopsLayerRef.current?.clearLayers();
-    highlightedRouteIdRef.current = null;
+    refreshRouteStopsOverlay(routes, cleared);
   };
 
   // Deseleccionar la parada actual: quita sus rutas del mapa y limpia el resaltado
   const deselectStop = () => {
+    let updated = visibleRoutes;
     if (selectedStop) {
-      const updated = { ...visibleRoutes };
+      updated = { ...visibleRoutes };
       routes
         .filter((r) => (r.stopIds ?? []).includes(selectedStop.id))
         .forEach((r) => { updated[r.id] = false; });
       setVisibleRoutes(updated);
       plotRoutes(routes, updated);
     }
-    routeStopsLayerRef.current?.clearLayers();
-    highlightedRouteIdRef.current = null;
+    refreshRouteStopsOverlay(routes, updated);
     setSelectedStop(null);
   };
 
@@ -539,9 +643,8 @@ export default function App() {
     routes.forEach((r) => { clearedRoutes[r.id] = false; });
     setVisibleRoutes(clearedRoutes);
     plotRoutes(routes, clearedRoutes);
+    refreshRouteStopsOverlay(routes, clearedRoutes);
 
-    routeStopsLayerRef.current?.clearLayers();
-    highlightedRouteIdRef.current = null;
     setSelectedStop(null);
   };
 
@@ -576,6 +679,7 @@ export default function App() {
         });
         setVisibleRoutes(visibility);
         plotRoutes(routesResults, visibility);
+        refreshRouteStopsOverlay(routesResults, visibility);
       }
     } catch (error) {
       console.error("Error realizando búsqueda:", error);
@@ -719,7 +823,7 @@ export default function App() {
     try {
       const [oLat, oLng] = originCoords;
       const [dLat, dLng] = dest;
-      const results: RouteType[] = await graphqlService.getRoutesBetween(oLat, oLng, dLat, dLng);
+      const results: RouteMatchType[] = await graphqlService.getRoutesBetween(oLat, oLng, dLat, dLng);
       setTripRoutes(results);
       const map = mapRef.current;
       if (map) {
@@ -812,6 +916,30 @@ export default function App() {
             </div>
           </form>
 
+          {/* Filtros de visualización: aplican a cualquier ruta visible, ya sea
+              desde esta pestaña, "Mostrar todas" o al seleccionar una parada. */}
+          <div className="search-container" style={{ gap: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)' }}>
+              Filtros de visualización
+            </span>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={showRouteStops}
+                onChange={() => setShowRouteStops((v) => !v)}
+              />
+              Mostrar paradas de las rutas visibles
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={showRouteArrows}
+                onChange={() => setShowRouteArrows((v) => !v)}
+              />
+              Mostrar flechas de dirección
+            </label>
+          </div>
+
           {/* Planificador: Origen -> Destino */}
           <div className="search-container" style={{ gap: 8 }}>
             {/* Estado del origen */}
@@ -878,17 +1006,30 @@ export default function App() {
               <div style={{ marginTop: 4 }}>
                 <h3 style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>
                   {tripRoutes.length > 0
-                    ? `${tripRoutes.length} línea(s) te llevan al destino:`
-                    : 'No se encontraron líneas directas para ese trayecto.'}
+                    ? (tripRoutes[0].exact
+                        ? `${tripRoutes.length} línea(s) te llevan al destino:`
+                        : 'Ninguna línea pasa exactamente por ahí. La más cercana:')
+                    : 'No hay líneas registradas para sugerir.'}
                 </h3>
-                {tripRoutes.map((route) => (
-                  <div key={route.id} className="item-card" onClick={() => toggleTripRoute(route)}>
+                {tripRoutes.map((match) => (
+                  <div
+                    key={match.route.id}
+                    className="item-card"
+                    onClick={() => toggleTripRoute(match.route)}
+                  >
                     <div className="item-info" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                      <div style={{ width: 12, height: 12, borderRadius: '50%', backgroundColor: route.color }}></div>
-                      <span className="item-name">{route.name}</span>
+                      <div style={{ width: 12, height: 12, borderRadius: '50%', backgroundColor: match.route.color }}></div>
+                      <div style={{ display: 'flex', flexDirection: 'column' }}>
+                        <span className="item-name">{match.route.name}</span>
+                        {!match.exact && (
+                          <span style={{ fontSize: 10, color: 'var(--text-muted, #94a3b8)' }}>
+                            aprox. {Math.round(match.distanceOriginM)} m del origen · {Math.round(match.distanceDestM)} m del destino
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <span style={{ fontSize: 11, color: visibleRoutes[route.id] ? 'var(--danger, #ef4444)' : 'var(--primary)' }}>
-                      {visibleRoutes[route.id] ? 'Ocultar ruta' : 'Ver ruta'}
+                    <span style={{ fontSize: 11, color: visibleRoutes[match.route.id] ? 'var(--danger, #ef4444)' : 'var(--primary)' }}>
+                      {visibleRoutes[match.route.id] ? 'Ocultar ruta' : 'Ver ruta'}
                     </span>
                   </div>
                 ))}
