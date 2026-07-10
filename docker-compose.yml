@@ -22,6 +22,11 @@ services:
       - ./backend:/app
     ports:
       - "8080:8080"
+    # DNS público: en algunos VPS la red interna de Docker no resuelve dominios,
+    # y los seeders (seed_microcruz/seed_osm) necesitan salir a internet.
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     environment:
       DB_HOST: db
       DB_NAME: transporte_db
