@@ -130,6 +130,53 @@ class SchemaGraphQLTest(TestCase):
         self.assertLess(data["closestStop"]["distance"], 5)
 
 
+class PlanTripTest(TestCase):
+    """Planificador de viajes: opción directa con tiempos estimados."""
+
+    def setUp(self):
+        self.linea = LineaMicro.objects.create(codigo="10", nombre="Línea 10", color="#10b981")
+        # Ruta recta de ~2 km de sur a norte
+        self.ruta = Ruta.objects.create(
+            linea=self.linea, nombre="Línea 10 Ida", sentido=Ruta.IDA,
+            geom=LineString([(-63.1812, -17.7863), (-63.1812, -17.7685)], srid=4326))
+        self.sur = Parada.objects.create(nombre="Parada Sur", geom=Point(-63.1812, -17.7863, srid=4326))
+        self.norte = Parada.objects.create(nombre="Parada Norte", geom=Point(-63.1812, -17.7685, srid=4326))
+        RutaParada.objects.create(ruta=self.ruta, parada=self.sur, orden=1)
+        RutaParada.objects.create(ruta=self.ruta, parada=self.norte, orden=2)
+
+    def _exec(self, query, variables=None):
+        result = schema.execute_sync(query, variable_values=variables or {})
+        self.assertIsNone(result.errors, msg=str(result.errors))
+        return result.data
+
+    def test_plan_trip_directo(self):
+        data = self._exec(
+            """query($oLat: Float!, $oLng: Float!, $dLat: Float!, $dLng: Float!){
+                 planTrip(originLat: $oLat, originLng: $oLng, destLat: $dLat, destLng: $dLng){
+                   transfers totalMinutes rideMinutes exact
+                   legs { route { name } boardStop { name } alightStop { name } rideDistanceM }
+                 }
+               }""",
+            {"oLat": -17.7863, "oLng": -63.1812, "dLat": -17.7685, "dLng": -63.1812})
+        opciones = data["planTrip"]
+        self.assertGreaterEqual(len(opciones), 1)
+        directa = opciones[0]
+        self.assertEqual(directa["transfers"], 0)
+        self.assertEqual(len(directa["legs"]), 1)
+        self.assertEqual(directa["legs"][0]["boardStop"]["name"], "Parada Sur")
+        self.assertEqual(directa["legs"][0]["alightStop"]["name"], "Parada Norte")
+        # ~2 km de recorrido y tiempo de micro positivo
+        self.assertGreater(directa["legs"][0]["rideDistanceM"], 1500)
+        self.assertGreater(directa["rideMinutes"], 0)
+
+    def test_plan_trip_sin_rutas_devuelve_vacio(self):
+        Ruta.objects.all().delete()
+        LineaMicro.objects.all().delete()
+        data = self._exec(
+            """{ planTrip(originLat: -17.78, originLng: -63.18, destLat: -17.77, destLng: -63.18){ totalMinutes } }""")
+        self.assertEqual(data["planTrip"], [])
+
+
 class EndpointHTTPTest(TestCase):
     """Regresión del bug 403/CSRF en el endpoint real."""
 

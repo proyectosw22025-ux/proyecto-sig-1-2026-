@@ -1,3 +1,1 @@
-from django.shortcuts import render
-
-# Create your views here.
+# Sin vistas propias: la API es 100% GraphQL (ver transit_app/schema.py).

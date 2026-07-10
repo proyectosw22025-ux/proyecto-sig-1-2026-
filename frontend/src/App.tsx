@@ -4,24 +4,26 @@ import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
-//import '/'
-import { 
-  Bus, 
-  Search, 
-  Navigation, 
-  Moon, 
-  Sun, 
-  Compass, 
-  MapPin, 
+import {
+  Bus,
+  Search,
+  Navigation,
+  Moon,
+  Sun,
+  Compass,
+  MapPin,
   Layers,
   Info,
   Trash2,
-  X
+  X,
+  Star,
+  Loader2,
+  AlertTriangle
 } from 'lucide-react';
 import { graphqlService } from './services/graphql';
 import { geocodeAddress } from './services/geocoding';
 import { getStreetRoute } from './services/routing';
-import type { RouteType, StopType, RouteMatchType } from './types';
+import type { RouteType, StopType, TripOption } from './types';
 
 // Solución para iconos de Leaflet por defecto que se rompen con Vite
 // @ts-ignore
@@ -104,6 +106,32 @@ function addDirectionArrows(latlngs: [number, number][], color: string, group: L
   });
 }
 
+// --- Favoritos en localStorage (paradas/líneas guardadas, sin login) ----------
+function loadFavorites(key: string): string[] {
+  try {
+    const raw = localStorage.getItem(key);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveFavorites(key: string, ids: string[]) {
+  try {
+    localStorage.setItem(key, JSON.stringify(ids));
+  } catch {
+    /* localStorage lleno o deshabilitado: los favoritos no persisten, sin romper la app */
+  }
+}
+
+// Formatea minutos a "X min" o "Xh Ym" para mostrar tiempos de viaje
+function formatMinutes(min: number): string {
+  const m = Math.round(min);
+  if (m < 60) return `${m} min`;
+  return `${Math.floor(m / 60)}h ${m % 60}min`;
+}
+
 export default function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>('dark');
   const [stops, setStops] = useState<StopType[]>([]);
@@ -125,9 +153,9 @@ export default function App() {
   const [clickMode, setClickMode] = useState<'origin' | 'destination'>('origin');
   const [closestStop, setClosestStop] = useState<StopType | null>(null);
 
-  // Resultado del planificador: líneas que conectan origen y destino
-  // (`exact: false` = no hay línea directa real, se muestra la más cercana)
-  const [tripRoutes, setTripRoutes] = useState<RouteMatchType[] | null>(null);
+  // Resultado del planificador: opciones de viaje (directas y con transbordo)
+  // ordenadas por tiempo estimado. `exact: false` = aproximación (fallback).
+  const [tripOptions, setTripOptions] = useState<TripOption[] | null>(null);
   const [tripLoading, setTripLoading] = useState(false);
   const [tripError, setTripError] = useState<string | null>(null);
 
@@ -139,14 +167,32 @@ export default function App() {
   // Mostrar/ocultar la caja de instrucciones del mapa
   const [showInstructions, setShowInstructions] = useState(true);
 
+  // Carga inicial de datos: spinner + error visible si el backend no responde
+  const [dataLoading, setDataLoading] = useState(true);
+  const [dataError, setDataError] = useState<string | null>(null);
+
+  // Favoritos: IDs de paradas y líneas guardados en localStorage (sin login)
+  const [favStops, setFavStops] = useState<string[]>(() => loadFavorites('favStops'));
+  const [favRoutes, setFavRoutes] = useState<string[]>(() => loadFavorites('favRoutes'));
+  // Filtrar el listado para mostrar solo los favoritos (aplica a la pestaña activa)
+  const [onlyFavorites, setOnlyFavorites] = useState(false);
+
   // Filtros de visualización (aplican en ambas pestañas y a cualquier ruta
   // visible, venga de "Mostrar todas", una línea individual o una parada
   // seleccionada). Apagados por defecto para no saturar el mapa.
   const [showRouteStops, setShowRouteStops] = useState(false);
   const [showRouteArrows, setShowRouteArrows] = useState(false);
+  // Agrupar paradas cercanas en clusters (burbujas con número) al alejar el
+  // zoom. Activado por defecto; se puede apagar para ver cada parada suelta.
+  const [clusteringEnabled, setClusteringEnabled] = useState(true);
 
   const mapRef = useRef<L.Map | null>(null);
-  const stopsClusterGroupRef = useRef<L.LayerGroup | null>(null);
+  // Dos capas de paradas: con clusters y plana (sin agrupar). Solo una está
+  // montada en el mapa a la vez; `activeStopsGroupRef` apunta a la activa y
+  // es la que usa plotStops para dibujar.
+  const stopsClusterGroupRef = useRef<L.MarkerClusterGroup | null>(null);
+  const stopsPlainGroupRef = useRef<L.LayerGroup | null>(null);
+  const activeStopsGroupRef = useRef<L.LayerGroup | null>(null);
   const routesLayerGroupRef = useRef<L.LayerGroup | null>(null);
   const routeStopsLayerRef = useRef<L.LayerGroup | null>(null);
   const stopMarkersRef = useRef<Record<string, L.Marker>>({});
@@ -154,6 +200,8 @@ export default function App() {
   const showRouteArrowsRef = useRef(false);
   // Espejo de visibleRoutes para leer el estado actual desde callbacks de Leaflet
   const visibleRoutesRef = useRef<Record<string, boolean>>({});
+  // Espejo de visibleStops (mismo propósito: leer el valor actual sin re-crear fetchData)
+  const visibleStopsRef = useRef<Record<string, boolean>>({});
   const originMarkerRef = useRef<L.Marker | null>(null);
   const destMarkerRef = useRef<L.Marker | null>(null);
   const closestPathRef = useRef<L.Polyline | null>(null);
@@ -205,13 +253,21 @@ export default function App() {
     };
 
     // Capas de datos
-    // @ts-ignore
-    // Sin agrupamiento: cada parada se ve como su propio punto (no clusters).
-    // La capa está siempre en el mapa; controlamos qué paradas se ven dibujando
-    // solo las marcadas como visibles (igual que las líneas).
-    const clusterGroup = L.layerGroup();
-    map.addLayer(clusterGroup);
+    // Paradas: dos capas (con clusters y plana); solo una está montada según
+    // el filtro de clustering. Controlamos qué paradas se ven dibujando solo
+    // las marcadas como visibles (igual que las líneas).
+    const clusterGroup = L.markerClusterGroup({
+      maxClusterRadius: 60,
+      spiderfyOnMaxZoom: true,
+      disableClusteringAtZoom: 18,
+    });
+    const plainGroup = L.layerGroup();
     stopsClusterGroupRef.current = clusterGroup;
+    stopsPlainGroupRef.current = plainGroup;
+
+    const paradasIniciales = clusteringEnabled ? clusterGroup : plainGroup;
+    map.addLayer(paradasIniciales);
+    activeStopsGroupRef.current = paradasIniciales;
 
     const routesGroup = L.layerGroup();
     map.addLayer(routesGroup);
@@ -259,8 +315,18 @@ export default function App() {
     visibleRoutesRef.current = visibleRoutes;
   }, [visibleRoutes]);
 
+  useEffect(() => {
+    visibleStopsRef.current = visibleStops;
+  }, [visibleStops]);
+
+  // Persistir favoritos en localStorage cada vez que cambian
+  useEffect(() => { saveFavorites('favStops', favStops); }, [favStops]);
+  useEffect(() => { saveFavorites('favRoutes', favRoutes); }, [favRoutes]);
+
   // Carga inicial de datos desde GraphQL
   const fetchData = async () => {
+    setDataLoading(true);
+    setDataError(null);
     try {
       const stopsData = await graphqlService.getStops();
       const routesData = await graphqlService.getRoutes();
@@ -268,14 +334,18 @@ export default function App() {
       setStops(stopsData);
       setRoutes(routesData);
 
-      // Modo on-demand: por defecto NINGUNA línea ni parada se dibuja (evita el
-      // caos visual). Se muestran al hacer click, buscar o con "Mostrar todas".
+      // Modo on-demand: la primera vez (nada cargado todavía) ninguna línea ni
+      // parada se dibuja, evitando el caos visual. En recargas posteriores de
+      // datos (p. ej. al cambiar de pestaña) se PRESERVA la visibilidad que ya
+      // tenía el usuario para lo que ya existía — si no, un "Mostrar todas" que
+      // el usuario presiona mientras esta promesa todavía está resolviendo
+      // quedaría deshecho en cuanto la respuesta llegue.
       const routeVis: Record<string, boolean> = {};
-      routesData.forEach((r: RouteType) => { routeVis[r.id] = false; });
+      routesData.forEach((r: RouteType) => { routeVis[r.id] = visibleRoutesRef.current[r.id] ?? false; });
       setVisibleRoutes(routeVis);
 
       const stopVis: Record<string, boolean> = {};
-      stopsData.forEach((s: StopType) => { stopVis[s.id] = false; });
+      stopsData.forEach((s: StopType) => { stopVis[s.id] = visibleStopsRef.current[s.id] ?? false; });
       setVisibleStops(stopVis);
 
       plotStops(stopsData, stopVis);
@@ -283,8 +353,17 @@ export default function App() {
       refreshRouteStopsOverlay(routesData, routeVis);
     } catch (error) {
       console.error("Error cargando datos del backend:", error);
+      setDataError('No se pudo cargar los datos. ¿El servidor está encendido? Reintenta.');
+    } finally {
+      setDataLoading(false);
     }
   };
+
+  // Alternar una parada/línea como favorita
+  const toggleFavStop = (stopId: string) =>
+    setFavStops((prev) => prev.includes(stopId) ? prev.filter((x) => x !== stopId) : [...prev, stopId]);
+  const toggleFavRoute = (routeId: string) =>
+    setFavRoutes((prev) => prev.includes(routeId) ? prev.filter((x) => x !== routeId) : [...prev, routeId]);
 
   // Dibujar paradas (Stops) con Clusters
   // Construye el contenido del popup de una parada (nombre, líneas y botón).
@@ -336,7 +415,7 @@ export default function App() {
   };
 
   const plotStops = (stopsList: StopType[], visibility: Record<string, boolean>) => {
-    const cluster = stopsClusterGroupRef.current;
+    const cluster = activeStopsGroupRef.current;
     if (!cluster) return;
 
     cluster.clearLayers();
@@ -445,18 +524,6 @@ export default function App() {
     setVisibleRoutes(updated);
     plotRoutes(routes, updated);
     refreshRouteStopsOverlay(routes, updated);
-  };
-
-  // Alternar una línea de los resultados del planificador (Ver ruta / Ocultar ruta)
-  const toggleTripRoute = (route: RouteType) => {
-    if (visibleRoutes[route.id]) {
-      const updated = { ...visibleRoutes, [route.id]: false };
-      setVisibleRoutes(updated);
-      plotRoutes(routes, updated);
-      refreshRouteStopsOverlay(routes, updated);
-    } else {
-      focusRoute(route);  // dibuja y centra
-    }
   };
 
   // Mostrar y enfocar una línea: dibuja su ruta (si estaba oculta) y centra el
@@ -615,6 +682,25 @@ export default function App() {
 
     map.setView([stop.latitude, stop.longitude], 16);
     stopMarkersRef.current[stop.id]?.openPopup();
+  };
+
+  // Alternar si las paradas se agrupan en clusters o se ven todas sueltas:
+  // desmonta la capa activa del mapa, monta la otra, y redibuja las paradas
+  // visibles en ella (misma lista/visibilidad, solo cambia el contenedor).
+  const toggleClustering = () => {
+    const map = mapRef.current;
+    if (!map) return;
+    const next = !clusteringEnabled;
+    setClusteringEnabled(next);
+
+    const nuevaCapa = next ? stopsClusterGroupRef.current : stopsPlainGroupRef.current;
+    const capaActual = activeStopsGroupRef.current;
+    if (!nuevaCapa || nuevaCapa === capaActual) return;
+
+    if (capaActual) map.removeLayer(capaActual);
+    map.addLayer(nuevaCapa);
+    activeStopsGroupRef.current = nuevaCapa;
+    plotStops(stops, visibleStops);
   };
 
   // Mostrar / ocultar una parada individual (checkbox de la lista)
@@ -817,21 +903,21 @@ export default function App() {
       return;
     }
 
-    // Buscar líneas que conecten origen y destino
+    // Planificar el viaje (opciones directas y con transbordo, con tiempos)
     setTripLoading(true);
-    setTripRoutes(null);
+    setTripOptions(null);
     try {
       const [oLat, oLng] = originCoords;
       const [dLat, dLng] = dest;
-      const results: RouteMatchType[] = await graphqlService.getRoutesBetween(oLat, oLng, dLat, dLng);
-      setTripRoutes(results);
+      const results: TripOption[] = await graphqlService.planTrip(oLat, oLng, dLat, dLng);
+      setTripOptions(results);
       const map = mapRef.current;
       if (map) {
         map.fitBounds(L.latLngBounds([[oLat, oLng], [dLat, dLng]]), { padding: [80, 80] });
       }
     } catch (err) {
-      console.error('Error buscando líneas:', err);
-      setTripError('Error buscando líneas. Reintenta.');
+      console.error('Error planificando el viaje:', err);
+      setTripError('Error planificando el viaje. Reintenta.');
     } finally {
       setTripLoading(false);
     }
@@ -855,10 +941,33 @@ export default function App() {
     setOriginCoords(null);
     setDestCoords(null);
     setClosestStop(null);
-    setTripRoutes(null);
+    setTripOptions(null);
     setTripError(null);
     setClickMode('origin');
     clickModeRef.current = 'origin';
+    hideAllRoutes();  // también oculta cualquier ruta que haya dibujado el planificador
+  };
+
+  // Dibuja en el mapa SOLO las líneas de la opción de viaje elegida (1 o 2
+  // tramos) y ajusta la vista para abarcarlas — apaga cualquier otra ruta que
+  // estuviera visible (p. ej. de otra opción elegida antes), para no acumular.
+  const showTripOption = (opt: TripOption) => {
+    const ids = new Set(opt.legs.map((leg) => leg.route.id));
+    const updated: Record<string, boolean> = {};
+    routes.forEach((r) => { updated[r.id] = ids.has(r.id); });
+    setVisibleRoutes(updated);
+    plotRoutes(routes, updated);
+    refreshRouteStopsOverlay(routes, updated);
+
+    const map = mapRef.current;
+    if (map) {
+      const bounds = L.latLngBounds([]);
+      ids.forEach((id) => {
+        const layer = lineObjectsRef.current[id];
+        if (layer) bounds.extend(layer.getBounds());
+      });
+      if (bounds.isValid()) map.fitBounds(bounds, { padding: [60, 60] });
+    }
   };
 
   return (
@@ -885,6 +994,31 @@ export default function App() {
         </header>
 
         <div className="sidebar-content">
+          {/* Estado de carga inicial / error del backend */}
+          {dataLoading && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-secondary)', padding: '4px 2px' }}>
+              <Loader2 size={16} className="spin" />
+              Cargando paradas y líneas…
+            </div>
+          )}
+          {dataError && (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8, fontSize: 12,
+              background: 'rgba(239,68,68,0.12)', border: '1px solid var(--danger, #ef4444)',
+              color: 'var(--danger, #ef4444)', padding: '8px 10px', borderRadius: 8,
+            }}>
+              <AlertTriangle size={16} style={{ flexShrink: 0 }} />
+              <span style={{ flex: 1 }}>{dataError}</span>
+              <button
+                className="action-btn"
+                style={{ padding: '3px 8px', fontSize: 11, width: 'auto' }}
+                onClick={fetchData}
+              >
+                Reintentar
+              </button>
+            </div>
+          )}
+
           {/* Buscador */}
           <form onSubmit={handleSearch} className="search-container">
             <div className="search-input-wrapper">
@@ -922,6 +1056,14 @@ export default function App() {
             <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)' }}>
               Filtros de visualización
             </span>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={clusteringEnabled}
+                onChange={toggleClustering}
+              />
+              Agrupar paradas en clusters
+            </label>
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer' }}>
               <input
                 type="checkbox"
@@ -995,44 +1137,65 @@ export default function App() {
               )}
             </form>
 
-            {(originCoords || destCoords || tripRoutes) && (
+            {(originCoords || destCoords || tripOptions) && (
               <button className="action-btn secondary" onClick={clearTrip}>
                 <Trash2 size={15} /> Limpiar
               </button>
             )}
 
-            {/* Resultados del planificador */}
-            {tripRoutes && (
+            {/* Resultados del planificador: opciones de viaje con tiempos */}
+            {tripOptions && (
               <div style={{ marginTop: 4 }}>
                 <h3 style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>
-                  {tripRoutes.length > 0
-                    ? (tripRoutes[0].exact
-                        ? `${tripRoutes.length} línea(s) te llevan al destino:`
-                        : 'Ninguna línea pasa exactamente por ahí. La más cercana:')
+                  {tripOptions.length > 0
+                    ? (tripOptions[0].exact
+                        ? `${tripOptions.length} opción(es) de viaje (más rápida primero):`
+                        : 'Ninguna línea pasa cerca. Opciones aproximadas:')
                     : 'No hay líneas registradas para sugerir.'}
                 </h3>
-                {tripRoutes.map((match) => (
+                {tripOptions.map((opt, i) => (
                   <div
-                    key={match.route.id}
+                    key={i}
                     className="item-card"
-                    onClick={() => toggleTripRoute(match.route)}
+                    style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6, cursor: 'pointer' }}
+                    onClick={() => showTripOption(opt)}
                   >
-                    <div className="item-info" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                      <div style={{ width: 12, height: 12, borderRadius: '50%', backgroundColor: match.route.color }}></div>
-                      <div style={{ display: 'flex', flexDirection: 'column' }}>
-                        <span className="item-name">{match.route.name}</span>
-                        {!match.exact && (
-                          <span style={{ fontSize: 10, color: 'var(--text-muted, #94a3b8)' }}>
-                            aprox. {Math.round(match.distanceOriginM)} m del origen · {Math.round(match.distanceDestM)} m del destino
-                          </span>
-                        )}
-                      </div>
+                    {/* Cabecera: tiempo total + badge de transbordo */}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                      <span style={{ fontSize: 14, fontWeight: 700 }}>
+                        ~{formatMinutes(opt.totalMinutes)}
+                      </span>
+                      <span style={{
+                        fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 10,
+                        background: opt.transfers === 0 ? 'var(--primary)' : 'var(--warning, #f59e0b)',
+                        color: 'white',
+                      }}>
+                        {opt.transfers === 0 ? 'Directo' : `${opt.transfers} transbordo`}
+                      </span>
                     </div>
-                    <span style={{ fontSize: 11, color: visibleRoutes[match.route.id] ? 'var(--danger, #ef4444)' : 'var(--primary)' }}>
-                      {visibleRoutes[match.route.id] ? 'Ocultar ruta' : 'Ver ruta'}
+
+                    {/* Tramos (líneas) con las paradas de subida/bajada */}
+                    {opt.legs.map((leg, j) => (
+                      <div key={j} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <div style={{ width: 10, height: 10, borderRadius: '50%', backgroundColor: leg.route.color, flexShrink: 0 }}></div>
+                        <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                          <span className="item-name" style={{ fontSize: 12 }}>{leg.route.name}</span>
+                          <span style={{ fontSize: 10, color: 'var(--text-muted, #94a3b8)' }}>
+                            {leg.boardStop.name} → {leg.alightStop.name} · {formatMinutes(leg.rideMinutes)}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+
+                    {/* Desglose caminata / micro */}
+                    <span style={{ fontSize: 10, color: 'var(--text-secondary)' }}>
+                      🚶 {formatMinutes(opt.walkMinutes)} a pie · 🚌 {formatMinutes(opt.rideMinutes)} en micro
                     </span>
                   </div>
                 ))}
+                <p style={{ fontSize: 10, color: 'var(--text-muted, #94a3b8)', marginTop: 4 }}>
+                  Tiempos estimados (caminata ~4.8 km/h, micro ~15 km/h con tráfico).
+                </p>
               </div>
             )}
           </div>
@@ -1045,9 +1208,17 @@ export default function App() {
                 {activeTab === 'stops' ? 'Paradas Registradas' : 'Líneas de Micros'}
               </h2>
 
-              {/* Controles de la pestaña Paradas: mostrar todas / ocultar todas */}
+              {/* Controles de la pestaña Paradas: favoritos / mostrar todas / ocultar */}
               {activeTab === 'stops' && (
                 <div style={{ display: 'flex', gap: 6 }}>
+                  <button
+                    className={`action-btn ${onlyFavorites ? '' : 'secondary'}`}
+                    style={{ padding: '4px 10px', fontSize: 11 }}
+                    onClick={() => setOnlyFavorites((v) => !v)}
+                    title="Mostrar solo paradas favoritas"
+                  >
+                    <Star size={13} /> {favStops.length}
+                  </button>
                   <button
                     className="action-btn"
                     style={{ padding: '4px 10px', fontSize: 11 }}
@@ -1069,9 +1240,17 @@ export default function App() {
                 </div>
               )}
 
-              {/* Controles de la pestaña Líneas: mostrar todas / ocultar todas */}
+              {/* Controles de la pestaña Líneas: favoritos / mostrar todas / ocultar */}
               {activeTab === 'routes' && (
                 <div style={{ display: 'flex', gap: 6 }}>
+                  <button
+                    className={`action-btn ${onlyFavorites ? '' : 'secondary'}`}
+                    style={{ padding: '4px 10px', fontSize: 11 }}
+                    onClick={() => setOnlyFavorites((v) => !v)}
+                    title="Mostrar solo líneas favoritas"
+                  >
+                    <Star size={13} /> {favRoutes.length}
+                  </button>
                   <button
                     className="action-btn"
                     style={{ padding: '4px 10px', fontSize: 11 }}
@@ -1101,12 +1280,26 @@ export default function App() {
 
             <div className="scroll-list">
               {activeTab === 'stops' ? (
-                stops.map((stop) => (
+                (() => {
+                  const lista = onlyFavorites ? stops.filter((s) => favStops.includes(s.id)) : stops;
+                  if (lista.length === 0) {
+                    return <p style={{ fontSize: 11, color: 'var(--text-muted, #94a3b8)', padding: '8px 2px' }}>
+                      {onlyFavorites ? 'No tienes paradas favoritas. Toca la ⭐ de una parada para guardarla.' : 'Sin paradas.'}
+                    </p>;
+                  }
+                  return lista.map((stop) => (
                   <div
                     key={stop.id}
                     className="item-card"
                     onClick={() => focusStop(stop)}
                   >
+                    <button
+                      className="fav-btn"
+                      onClick={(e) => { e.stopPropagation(); toggleFavStop(stop.id); }}
+                      title={favStops.includes(stop.id) ? 'Quitar de favoritos' : 'Agregar a favoritos'}
+                    >
+                      <Star size={16} fill={favStops.includes(stop.id) ? '#f59e0b' : 'none'} color={favStops.includes(stop.id) ? '#f59e0b' : 'currentColor'} />
+                    </button>
                     <div className="item-info">
                       <span className="item-name">{stop.name}</span>
                       <span className="item-desc">{stop.routes.length} líneas pasan por aquí</span>
@@ -1127,9 +1320,17 @@ export default function App() {
                       </span>
                     </label>
                   </div>
-                ))
+                  ));
+                })()
               ) : (
-                routes.map((route) => {
+                (() => {
+                  const lista = onlyFavorites ? routes.filter((r) => favRoutes.includes(r.id)) : routes;
+                  if (lista.length === 0) {
+                    return <p style={{ fontSize: 11, color: 'var(--text-muted, #94a3b8)', padding: '8px 2px' }}>
+                      {onlyFavorites ? 'No tienes líneas favoritas. Toca la ⭐ de una línea para guardarla.' : 'Sin líneas.'}
+                    </p>;
+                  }
+                  return lista.map((route) => {
                   // Una misma línea comercial puede tener varios recorridos en OSM
                   // (ej. 3 "Línea 1"). Los diferenciamos con un número de recorrido.
                   const mismoNombre = routes.filter((r) => r.name === route.name);
@@ -1142,13 +1343,20 @@ export default function App() {
                     className="item-card"
                     onClick={() => focusRoute(route)}
                   >
+                    <button
+                      className="fav-btn"
+                      onClick={(e) => { e.stopPropagation(); toggleFavRoute(route.id); }}
+                      title={favRoutes.includes(route.id) ? 'Quitar de favoritos' : 'Agregar a favoritos'}
+                    >
+                      <Star size={16} fill={favRoutes.includes(route.id) ? '#f59e0b' : 'none'} color={favRoutes.includes(route.id) ? '#f59e0b' : 'currentColor'} />
+                    </button>
                     <div className="item-info" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                       <div style={{ width: 12, height: 12, borderRadius: '50%', backgroundColor: route.color }}></div>
                       <span className="item-name">{label}</span>
                     </div>
-                    <label 
-                      className="switch" 
-                      onClick={(e) => e.stopPropagation()} 
+                    <label
+                      className="switch"
+                      onClick={(e) => e.stopPropagation()}
                       style={{ cursor: 'pointer', display: 'flex', alignItems: 'center' }}
                     >
                       <input
@@ -1163,7 +1371,8 @@ export default function App() {
                     </label>
                   </div>
                   );
-                })
+                  });
+                })()
               )}
             </div>
           </div>

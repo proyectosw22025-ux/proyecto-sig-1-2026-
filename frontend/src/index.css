@@ -14,6 +14,7 @@
   --primary-light: rgba(59, 130, 246, 0.1);
   --success: #10b981;
   --danger: #ef4444;
+  --warning: #f59e0b;
   --shadow: 0 8px 32px 0 rgba(15, 23, 42, 0.06);
   --blur: blur(16px);
   --font-title: 'Outfit', sans-serif;
@@ -34,6 +35,7 @@
   --primary-light: rgba(96, 165, 250, 0.15);
   --success: #34d399;
   --danger: #f87171;
+  --warning: #fbbf24;
   --shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.4);
 }
 
@@ -428,22 +430,72 @@ body, html, #root {
   color: var(--primary) !important;
 }
 
-/* Responsive */
+/* Spinner de carga (icono giratorio) */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+
+/* Botón de favorito (estrella) en cada tarjeta */
+.fav-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  margin-right: 6px;
+  display: flex;
+  align-items: center;
+  color: var(--text-muted);
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+.fav-btn:hover {
+  background: var(--primary-light);
+  color: var(--warning);
+}
+
+/* Responsive: en pantallas chicas el mapa arriba y el panel abajo */
 @media (max-width: 768px) {
   .app-container {
     flex-direction: column-reverse;
   }
   .sidebar {
     width: 100%;
-    height: 50vh;
+    height: 55vh;
     border-right: none;
     border-top: 1px solid var(--border-color);
   }
   .sidebar-content {
     padding: 16px;
-    gap: 16px;
+    gap: 14px;
   }
   .map-container {
-    height: 50vh;
+    height: 45vh;
+  }
+  /* La cabecera de cada sección se apila para no desbordar en móvil */
+  .item-name {
+    font-size: 13px;
+  }
+  /* Los grupos de botones (Mostrar todas / Ocultar / favoritos) hacen wrap */
+  .section-title {
+    font-size: 15px;
+  }
+}
+
+/* Pantallas muy angostas (teléfonos pequeños): tipografía y padding más compactos */
+@media (max-width: 420px) {
+  .sidebar-header {
+    padding: 14px 16px;
+  }
+  .brand-title {
+    font-size: 18px;
+  }
+  .item-card {
+    padding: 10px 12px;
+  }
+  .stats-grid {
+    gap: 8px;
   }
 }

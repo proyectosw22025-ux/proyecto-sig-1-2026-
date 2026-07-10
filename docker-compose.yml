@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: josephfgj
     ports:
-      - "5432:5432"
+      - "5433:5432"   # 5432 lo usa tu Postgres nativo; el backend igual se conecta por la red interna (DB_HOST=db)
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -28,9 +28,17 @@ services:
       DB_USER: postgres
       DB_PASSWORD: josephfgj
       DB_PORT: "5432"
+      ALLOWED_HOSTS: "*"   # acepta cualquier host (local o la IP/dominio del VPS)
     depends_on:
       db:
         condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
 
 volumes:
   postgres_data:

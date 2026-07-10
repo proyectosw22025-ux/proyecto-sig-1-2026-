@@ -7,11 +7,30 @@ export interface RouteType {
   stopIds?: string[];    // IDs de las paradas que pertenecen a esta ruta
 }
 
-export interface RouteMatchType {
+// Parada mínima usada en los tramos del viaje (no trae la lista de líneas)
+export interface StopRef {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+}
+
+export interface TripLeg {
   route: RouteType;
-  exact: boolean;          // false = aproximación (fallback), no hay línea directa real
-  distanceOriginM: number; // metros del trazado al origen
-  distanceDestM: number;   // metros del trazado al destino
+  boardStop: StopRef;      // dónde subir
+  alightStop: StopRef;     // dónde bajar
+  rideDistanceM: number;
+  rideMinutes: number;
+}
+
+export interface TripOption {
+  transfers: number;       // 0 = directa, 1 = un transbordo
+  legs: TripLeg[];         // 1 tramo (directa) o 2 (con transbordo)
+  walkDistanceM: number;   // total a pie
+  walkMinutes: number;
+  rideMinutes: number;
+  totalMinutes: number;
+  exact: boolean;          // false = aproximación (fallback), ninguna línea sirve bien
 }
 
 export interface StopType {

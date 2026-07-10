@@ -12,7 +12,6 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 
 from pathlib import Path
 import os
-import sys
 import glob
 
 # Configurar rutas específicas de Windows para GDAL/GEOS en GeoDjango.
@@ -48,7 +47,10 @@ SECRET_KEY = 'django-insecure-)izx#nibm!i$56z-nl*a%5o_0gcm)-w4f4_32xz%%xc3dp)qej
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+# Hosts permitidos. En local queda vacío (Django con DEBUG acepta localhost).
+# En el VPS se pasa ALLOWED_HOSTS por variable de entorno (ej. "*" o la IP)
+# para que acepte peticiones dirigidas al host público. Ver docker-compose.yml.
+ALLOWED_HOSTS = [h for h in os.environ.get('ALLOWED_HOSTS', '').split(',') if h]
 
 
 # Application definition

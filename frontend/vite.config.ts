@@ -4,11 +4,19 @@ import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vite.dev/config/
 export default defineConfig({
+  // En desarrollo nativo (npm run dev) el frontend usa la ruta relativa
+  // /graphql/, y este proxy la reenvía al backend Django en el puerto 8080
+  // (en Docker esto lo hace Nginx; ver frontend/nginx.conf).
+  server: {
+    proxy: {
+      '/graphql': 'http://localhost:8080',
+    },
+  },
   plugins: [
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.svg', 'icons.svg'],
+      includeAssets: ['favicon.svg'],
       manifest: {
         name: 'Visor SIG - Transporte Público Santa Cruz',
         short_name: 'Visor SIG',

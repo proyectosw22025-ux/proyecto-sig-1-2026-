@@ -1,4 +1,7 @@
-const GRAPHQL_URL = 'http://localhost:8080/graphql/';
+// Ruta RELATIVA al mismo origen: el navegador pide /graphql/ al host que sirve
+// la página y Nginx (o el proxy de Vite en dev) lo reenvía al backend. Así no
+// hay IP hardcodeada y funciona igual en local y en el VPS.
+const GRAPHQL_URL = '/graphql/';
 
 async function queryGraphQL(query: string, variables: Record<string, any> = {}) {
   try {
@@ -100,26 +103,35 @@ export const graphqlService = {
     return data.searchRoutes;
   },
 
-  async getRoutesBetween(originLat: number, originLng: number, destLat: number, destLng: number) {
+  async planTrip(originLat: number, originLng: number, destLat: number, destLng: number) {
     const query = `
-      query RoutesBetween($oLat: Float!, $oLng: Float!, $dLat: Float!, $dLng: Float!) {
-        routesBetween(originLat: $oLat, originLng: $oLng, destLat: $dLat, destLng: $dLng) {
+      query PlanTrip($oLat: Float!, $oLng: Float!, $dLat: Float!, $dLng: Float!) {
+        planTrip(originLat: $oLat, originLng: $oLng, destLat: $dLat, destLng: $dLng) {
+          transfers
+          walkDistanceM
+          walkMinutes
+          rideMinutes
+          totalMinutes
           exact
-          distanceOriginM
-          distanceDestM
-          route {
-            id
-            name
-            color
-            sentido
-            geomGeojson
-            stopIds
+          legs {
+            rideDistanceM
+            rideMinutes
+            boardStop { id name latitude longitude }
+            alightStop { id name latitude longitude }
+            route {
+              id
+              name
+              color
+              sentido
+              geomGeojson
+              stopIds
+            }
           }
         }
       }
     `;
     const data = await queryGraphQL(query, { oLat: originLat, oLng: originLng, dLat: destLat, dLng: destLng });
-    return data.routesBetween;
+    return data.planTrip;
   },
 
   async getClosestStop(latitude: number, longitude: number) {
