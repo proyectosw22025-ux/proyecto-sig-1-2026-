@@ -46,16 +46,17 @@ Ejecutar desde `backend/` con el venv activo (`venv\Scripts\activate` en Windows
 ```bash
 pip install -r requirements.txt        # Django, strawberry-graphql[django], psycopg2-binary, requests, django-cors-headers
 python manage.py migrate               # aplica el esquema (PostGIS)
-python manage.py seed_microcruz        # BORRA y recarga con datos REALES (recomendado): 147 líneas de Microcruz + paradas reales de OSM
+python manage.py seed_microcruz        # BORRA y recarga (recomendado): 147 líneas + ~2165 paradas reales, todo de Microcruz
 python manage.py seed_db               # BORRA y recarga con datos curados de demo (offline)
 python manage.py seed_osm              # BORRA y recarga con datos 100% OSM vía Overpass API (rutas y paradas de la misma fuente)
 python manage.py runserver 8080        # debe ser 8080 — ver detalle arriba
-python manage.py test                  # 16 tests: haversine, modelo espacial, esquema GraphQL, regresión CSRF
+python manage.py test                  # 18 tests: haversine, modelo espacial, esquema GraphQL, planTrip, regresión CSRF
 ```
 
 Los tres seeders **borran todas las Paradas y Rutas existentes antes de cargar**:
 
-- `seed_microcruz` ([commands/seed_microcruz.py](backend/transit_app/management/commands/seed_microcruz.py)) — **el más completo**: combina las ~147 líneas reales (con trazado ida/vuelta) de la API pública de Microcruz (`https://microcruz.tel.bo`) con las paradas físicas reales de OSM (nodos `highway=bus_stop`/`public_transport=platform`; deliberadamente NO usa los "puntos" de grafo de calles de Microcruz, que son nodos de su buscador de rutas, no paradas físicas). Vincula cada parada a la ruta más cercana con `LineLocatePoint` + `dwithin`, misma lógica que `seed_osm`.
+- `seed_microcruz` ([commands/seed_microcruz.py](backend/transit_app/management/commands/seed_microcruz.py)) — **el más completo y el recomendado**: usa las ~147 líneas (con trazado ida/vuelta) Y las ~2165 paradas, ambas de la API pública de Microcruz (`https://microcruz.tel.bo`). Las paradas son puntos virtuales estratégicos (cerca de colegios, hospitales, esquinas — el sistema real de Santa Cruz no depende de infraestructura física en cada una) y traen nombre real de esquina (`api/points.php`, campo `esquinas`). `rutasPorPunto` da la asociación línea↔punto ya resuelta por el propio sitio; cada punto se asigna a la rama ida/vuelta más cercana y se ordena a lo largo del trazado con `LineLocatePoint`.
+- La búsqueda de transbordos en `planTrip` ([schema.py](backend/transit_app/schema.py)) es combinatoria (hasta 12x12 pares de rutas, comparando todas sus paradas entre sí) y por eso **se salta si ya hay 3+ directas** encontradas — necesario para que responda en segundos con ~50 paradas promedio por ruta.
 - `seed_db` ([commands/seed_db.py](backend/transit_app/management/commands/seed_db.py)) — 5 líneas y paradas hardcodeadas. Offline y determinista; útil como demo/respaldo confiable.
 - `seed_osm` ([commands/seed_osm.py](backend/transit_app/management/commands/seed_osm.py)) — paradas/líneas reales de Santa Cruz desde la **Overpass API** (`requests`). Arma el `LineString` de cada ruta cosiendo los tramos (ways) de la relación con un algoritmo greedy, y vincula las paradas por membresía en la relación. Si Overpass falla o no devuelve nada, aborta sin tocar la BD. Las relaciones de ruta de bus en OSM para Santa Cruz suelen ser escasas, así que puede haber menos rutas que paradas.
 

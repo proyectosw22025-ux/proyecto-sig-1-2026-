@@ -1,29 +1,30 @@
 """
-Importador HÍBRIDO de transporte real de Santa Cruz:
-  - RUTAS (trazado, líneas, ida/vuelta) desde la API pública de Microcruz
-    (https://microcruz.tel.bo) — ~147 líneas reales, mucho más completo que OSM.
-  - PARADAS desde OpenStreetMap/Overpass — solo nodos etiquetados
-    explícitamente como `highway=bus_stop` o `public_transport=platform`,
-    es decir paradas físicas reales (con caseta/señalética), NO cualquier
-    esquina. Microcruz expone ~2000 "puntos" que son en realidad nodos de su
-    grafo de calles para el buscador de rutas, no paradas físicas — de ahí
-    que no se usen como fuente de paradas.
+Importador de datos REALES de transporte de Santa Cruz desde la API pública
+de Microcruz (https://microcruz.tel.bo), al modelo normalizado
+LineaMicro -> Ruta -> RutaParada -> Parada.
 
-Al modelo normalizado LineaMicro -> Ruta -> RutaParada -> Parada.
+Fuente mucho más completa que OSM/Overpass para esta ciudad: expone ~147
+líneas y ~2000 puntos (paradas/esquinas) con la asociación línea<->punto ya
+resuelta por el propio sitio. Estos puntos son paradas VIRTUALES estratégicas
+(cerca de colegios, hospitales, esquinas, etc.) — el sistema real de micros de
+Santa Cruz no depende de infraestructura física (banca/caseta) en cada una;
+por eso se usan tal cual, con sus nombres reales de esquina.
 
-Lógica de mapeo:
-  - Cada nombre de ruta de Microcruz ("linea72", "linea16 Azul", ...) es una
-    LINEA_MICRO. El trazado viene como una polilínea con `seq` correlativo;
-    `api/routes.php?action=sentidos` indica en qué rango de `seq` está la IDA
-    y en cuál la VUELTA. Cada rango se separa en una RUTA. Si no hay rango
-    válido, se crea una única ruta CIRCULAR con todo el trazado.
-  - Las paradas (nodos OSM) se vinculan a cada Ruta por CERCANÍA geométrica
-    al trazado (dwithin) y se ordenan a lo largo de él con `LineLocatePoint`,
-    igual que hace seed_osm.py.
+Lógica de mapeo Microcruz -> modelo:
+  - Cada nombre de ruta ("linea72", "linea16 Azul", ...) es una LINEA_MICRO.
+  - El trazado de cada línea viene como una única polilínea con `seq`
+    correlativo; `api/routes.php?action=sentidos` indica en qué rango de
+    `seq` está la IDA y en cuál la VUELTA. Cada rango se separa en una RUTA.
+    Si no hay rango válido, se crea una única ruta CIRCULAR con todo el trazado.
+  - `api/points.php` da los PUNTOS (paradas) de toda la ciudad, con el nombre
+    de la esquina y, en `rutasPorPunto`, qué líneas pasan por cada uno.
+  - Para asignar un punto a una ruta concreta (ida vs. vuelta) y calcular su
+    `orden`, se proyecta sobre el trazado con `LineLocatePoint` (igual que
+    hace seed_osm.py) y se asigna a la rama más cercana.
 
-Uso:  python manage.py seed_microcruz  [--timeout 30] [--chunk 20] [--osm-timeout 60]
+Uso:  python manage.py seed_microcruz  [--timeout 30] [--chunk 20]
 
-Si alguna de las dos fuentes no responde, aborta SIN tocar la BD (usa seed_db).
+Si la API no responde, aborta SIN tocar la BD (usa seed_db o seed_osm).
 """
 import re
 import time
@@ -38,9 +39,7 @@ from transit_app.models import LineaMicro, Parada, Ruta, RutaParada
 
 import requests
 
-MICROCRUZ_BASE_URL = "https://microcruz.tel.bo/api"
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-SCZ_BBOX = (-18.05, -63.35, -17.65, -63.00)  # sur, oeste, norte, este
+BASE_URL = "https://microcruz.tel.bo/api"
 HEADERS = {"User-Agent": "VisorSIG-SantaCruz/1.0 (proyecto academico)"}
 
 PALETTE = [
@@ -58,54 +57,38 @@ COLOR_WORDS = {
     "blanco": "#9ca3af", "gris": "#6b7280", "plomo": "#6b7280",
 }
 
-# Umbral de cercanía parada<->trazado para vincularlas, en grados
-# (~165 m a la latitud de Santa Cruz). Más laxo que seed_osm.py porque aquí
-# las paradas (OSM) y el trazado (Microcruz) vienen de fuentes distintas y
-# no siempre coinciden con precisión de metro.
-UMBRAL_PROXIMIDAD_GRADOS = 0.0015
+# Umbral de cercanía punto<->trazado para decidir a qué rama (ida/vuelta)
+# pertenece un punto, en grados (~110 m a la latitud de Santa Cruz).
+UMBRAL_PROXIMIDAD_GRADOS = 0.001
 
 
 class Command(BaseCommand):
-    help = ("Importa rutas reales de Microcruz + paradas físicas reales de OSM, "
-            "vinculadas por cercanía geométrica")
+    help = "Importa líneas, rutas y paradas reales de Santa Cruz desde la API de Microcruz"
 
     def add_arguments(self, parser):
         parser.add_argument("--timeout", type=int, default=30,
-                             help="Timeout en segundos por petición a Microcruz")
+                             help="Timeout en segundos por petición HTTP")
         parser.add_argument("--chunk", type=int, default=20,
-                             help="Cuántas líneas pedir por petición a Microcruz")
-        parser.add_argument("--osm-timeout", type=int, default=60,
-                             help="Timeout en segundos para la consulta Overpass")
+                             help="Cuántas líneas pedir por petición (la propia web usa 20)")
 
     def handle(self, *args, **options):
         timeout = options["timeout"]
         chunk_size = options["chunk"]
-        osm_timeout = options["osm_timeout"]
 
         try:
-            route_names = self._get_json(f"{MICROCRUZ_BASE_URL}/routes.php?action=list", timeout).get("routes", [])
+            route_names = self._get_json("/routes.php?action=list", timeout).get("routes", [])
+            points_data = self._get_json("/points.php", timeout)
         except requests.RequestException as exc:
             self.stderr.write(self.style.ERROR(f"Error consultando Microcruz: {exc}"))
-            self.stderr.write("No se modificó la base de datos.")
+            self.stderr.write("No se modificó la base de datos. Usa 'python manage.py seed_db'.")
             return
 
-        if not route_names:
-            self.stderr.write(self.style.ERROR("Microcruz no devolvió líneas. No se modificó la BD."))
+        if not route_names or not points_data.get("points"):
+            self.stderr.write(self.style.ERROR("Microcruz no devolvió datos. No se modificó la BD."))
             return
 
-        try:
-            stop_nodes = self._fetch_osm_paradas(osm_timeout)
-        except requests.RequestException as exc:
-            self.stderr.write(self.style.ERROR(f"Error consultando Overpass: {exc}"))
-            self.stderr.write("No se modificó la base de datos.")
-            return
-
-        if not stop_nodes:
-            self.stderr.write(self.style.ERROR("Overpass no devolvió paradas. No se modificó la BD."))
-            return
-
-        self.stdout.write(f"Recibido: {len(route_names)} líneas (Microcruz), "
-                           f"{len(stop_nodes)} paradas físicas reales (OSM).")
+        self.stdout.write(f"Recibido de Microcruz: {len(route_names)} líneas, "
+                           f"{len(points_data['points'])} puntos.")
 
         geometries, sentidos = {}, {}
         for i in range(0, len(route_names), chunk_size):
@@ -113,13 +96,11 @@ class Command(BaseCommand):
             names_param = ",".join(chunk)
             try:
                 geometries.update(
-                    self._get_json(f"{MICROCRUZ_BASE_URL}/routes.php?names={names_param}", timeout)
-                    .get("routes", {})
+                    self._get_json(f"/routes.php?names={names_param}", timeout).get("routes", {})
                 )
                 sentidos.update(
-                    self._get_json(
-                        f"{MICROCRUZ_BASE_URL}/routes.php?action=sentidos&names={names_param}", timeout
-                    ).get("sentidos", {})
+                    self._get_json(f"/routes.php?action=sentidos&names={names_param}", timeout)
+                    .get("sentidos", {})
                 )
             except requests.RequestException as exc:
                 self.stderr.write(self.style.WARNING(
@@ -131,12 +112,15 @@ class Command(BaseCommand):
             LineaMicro.objects.all().delete()
             Parada.objects.all().delete()
 
-            self._crear_paradas(stop_nodes)
-            self._crear_lineas_y_rutas(route_names, geometries, sentidos)
-            vinculos = self._vincular_por_cercania()
+            paradas_por_punto_id = self._crear_paradas(points_data["points"])
+            rutas_por_nombre = self._crear_lineas_y_rutas(route_names, geometries, sentidos)
+            vinculos = self._vincular_paradas(
+                route_names, rutas_por_nombre, points_data.get("rutasPorPunto", {}),
+                paradas_por_punto_id,
+            )
 
         self.stdout.write(self.style.SUCCESS(
-            f"Importación completa: {LineaMicro.objects.count()} líneas, "
+            f"Importación Microcruz completa: {LineaMicro.objects.count()} líneas, "
             f"{Ruta.objects.count()} rutas, {Parada.objects.count()} paradas, "
             f"{vinculos} vínculos ruta-parada."))
 
@@ -144,53 +128,39 @@ class Command(BaseCommand):
     # HTTP
     # -----------------------------------------------------------------
 
-    def _get_json(self, url, timeout):
-        resp = requests.get(url, headers=HEADERS, timeout=timeout)
+    def _get_json(self, path, timeout):
+        resp = requests.get(f"{BASE_URL}{path}", headers=HEADERS, timeout=timeout)
         resp.raise_for_status()
         return resp.json()
 
-    def _fetch_osm_paradas(self, timeout):
-        s, w, n, e = SCZ_BBOX
-        bbox = f"{s},{w},{n},{e}"
-        query = f"""
-        [out:json][timeout:{timeout}];
-        (
-          node["highway"="bus_stop"]({bbox});
-          node["public_transport"="platform"]["bus"="yes"]({bbox});
-        );
-        out body;
-        """
-        resp = requests.post(
-            OVERPASS_URL, data={"data": query}, headers=HEADERS, timeout=timeout + 30,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return [el for el in data.get("elements", []) if el.get("type") == "node"]
-
     # -----------------------------------------------------------------
-    # Paradas (nodos OSM reales)
+    # Paradas (puntos)
     # -----------------------------------------------------------------
 
-    def _crear_paradas(self, stop_nodes):
+    def _crear_paradas(self, points):
+        paradas_por_punto_id = {}
         nuevas = []
-        vistos = set()
-        for node in stop_nodes:
-            osm_id = node["id"]
-            if osm_id in vistos:
+        for p in points:
+            punto_id = p.get("punto")
+            lat, lng = p.get("lat"), p.get("lng")
+            if punto_id is None or lat is None or lng is None:
                 continue
-            vistos.add(osm_id)
-            nombre = node.get("tags", {}).get("name") or f"Parada OSM {osm_id}"
+            nombre = p.get("esquinas") or f"Punto {punto_id}"
             nuevas.append(Parada(
-                nombre=nombre[:200], codigo=str(osm_id),
-                geom=Point(node["lon"], node["lat"], srid=4326),
+                nombre=nombre[:200], codigo=str(punto_id),
+                geom=Point(lng, lat, srid=4326),
             ))
         Parada.objects.bulk_create(nuevas)
+        for parada in Parada.objects.filter(codigo__in=[str(p["punto"]) for p in points if "punto" in p]):
+            paradas_por_punto_id[parada.codigo] = parada
+        return paradas_por_punto_id
 
     # -----------------------------------------------------------------
     # Líneas y rutas (con separación ida/vuelta)
     # -----------------------------------------------------------------
 
     def _crear_lineas_y_rutas(self, route_names, geometries, sentidos):
+        rutas_por_nombre = {}  # nombre microcruz -> lista de Ruta creadas
         color_idx = 0
         for name in route_names:
             seq_points = geometries.get(name)
@@ -211,16 +181,20 @@ class Command(BaseCommand):
             info_sentido = sentidos.get(name)
 
             tramos = self._dividir_en_tramos(por_seq, info_sentido)
+            rutas_creadas = []
             for sentido, coords in tramos:
                 if len(coords) < 2:
                     continue
                 deduped = self._dedupe(coords)
                 if len(deduped) < 2:
                     continue
-                Ruta.objects.create(
+                ruta = Ruta.objects.create(
                     linea=linea, nombre=name[:150], sentido=sentido,
                     geom=LineString(deduped, srid=4326),
                 )
+                rutas_creadas.append(ruta)
+            rutas_por_nombre[name] = rutas_creadas
+        return rutas_por_nombre
 
     @staticmethod
     def _parse_codigo_color(name):
@@ -265,19 +239,45 @@ class Command(BaseCommand):
         return deduped
 
     # -----------------------------------------------------------------
-    # Vínculo Ruta <-> Parada por cercanía geométrica (orden a lo largo del trazado)
+    # Vínculo Ruta <-> Parada (con orden a lo largo del trazado)
     # -----------------------------------------------------------------
 
-    def _vincular_por_cercania(self):
+    def _vincular_paradas(self, route_names, rutas_por_nombre, rutas_por_punto, paradas_por_punto_id):
+        # Invertir rutasPorPunto: nombre de línea -> lista de Paradas que la tocan
+        paradas_por_linea = {}
+        for punto_key, nombres_ruta in rutas_por_punto.items():
+            # Las claves vienen como "punto7", no "7"
+            punto_id = re.sub(r"^punto", "", str(punto_key), flags=re.IGNORECASE)
+            parada = paradas_por_punto_id.get(punto_id)
+            if not parada:
+                continue
+            for nombre in nombres_ruta:
+                paradas_por_linea.setdefault(nombre, []).append(parada)
+
         total_vinculos = 0
-        for ruta in Ruta.objects.all():
-            cercanas = (
-                Parada.objects
-                .filter(geom__dwithin=(ruta.geom, UMBRAL_PROXIMIDAD_GRADOS))
-                .annotate(pos=LineLocatePoint(ruta.geom, F('geom')))
-                .order_by('pos')
-            )
-            for orden, parada in enumerate(cercanas, start=1):
-                RutaParada.objects.create(ruta=ruta, parada=parada, orden=orden)
-                total_vinculos += 1
+        for name in route_names:
+            rutas = rutas_por_nombre.get(name) or []
+            candidatas = paradas_por_linea.get(name) or []
+            if not rutas or not candidatas:
+                continue
+
+            # Si hay una sola rama (circular), todas las candidatas van ahí.
+            # Si hay ida+vuelta, cada parada se asigna a la rama más cercana.
+            asignacion = {ruta.id: [] for ruta in rutas}
+            for parada in candidatas:
+                mejor_ruta = min(rutas, key=lambda r: r.geom.distance(parada.geom))
+                asignacion[mejor_ruta.id].append(parada.id)
+
+            for ruta in rutas:
+                ids = asignacion[ruta.id]
+                if not ids:
+                    continue
+                ordenadas = (
+                    Parada.objects.filter(id__in=ids)
+                    .annotate(pos=LineLocatePoint(ruta.geom, F('geom')))
+                    .order_by('pos')
+                )
+                for orden, parada in enumerate(ordenadas, start=1):
+                    RutaParada.objects.create(ruta=ruta, parada=parada, orden=orden)
+                    total_vinculos += 1
         return total_vinculos

@@ -342,8 +342,11 @@ class Query:
           1. DIRECTAS: líneas cuyo recorrido pasa cerca (radius_m, ampliable) del
              origen Y del destino. Una sola línea.
           2. TRANSBORDOS: una línea desde el origen + otra hasta el destino que se
-             crucen a poca distancia a pie (dos líneas). Aparecen cuando resultan
-             más rápidos que una directa lejana.
+             crucen a poca distancia a pie (dos líneas). Es una búsqueda
+             combinatoria (hasta 12x12 pares de rutas, cada una comparando TODAS
+             sus paradas entre sí) — cara con miles de paradas por ruta, así que
+             SOLO se ejecuta si hay menos de 3 directas ya encontradas (con
+             pocas directas es cuando un transbordo realmente puede ganar).
           3. Si no hay ni directas ni transbordos, FALLBACK aproximado: las líneas
              más cercanas a ambos puntos, marcadas exact=False (nunca deja sin
              opciones mientras existan rutas en la BD).
@@ -377,22 +380,25 @@ class Query:
         ]
 
         # --- 2. Transbordos: línea cerca del origen + línea cerca del destino ---
-        acc_deg = ACCESS_WALK_M * DEG_PER_M
-        cerca_origen = list(base_qs.filter(geom__dwithin=(origin, acc_deg)).order_by('dist_origen')[:12])
-        cerca_destino = list(base_qs.filter(geom__dwithin=(dest, acc_deg)).order_by('dist_destino')[:12])
+        # Búsqueda combinatoria costosa (ver docstring) — se salta si ya hay
+        # suficientes directas, que es el caso común en zonas bien servidas.
+        if len(opciones) < 3:
+            acc_deg = ACCESS_WALK_M * DEG_PER_M
+            cerca_origen = list(base_qs.filter(geom__dwithin=(origin, acc_deg)).order_by('dist_origen')[:12])
+            cerca_destino = list(base_qs.filter(geom__dwithin=(dest, acc_deg)).order_by('dist_destino')[:12])
 
-        transbordos = {}  # (linea_a, linea_b) -> mejor TripOption por tiempo
-        for a in cerca_origen:
-            for b in cerca_destino:
-                if a.id == b.id or a.linea_id == b.linea_id:
-                    continue
-                opt = _transfer_option(a, b, origin_lat, origin_lng, dest_lat, dest_lng)
-                if not opt:
-                    continue
-                clave = (a.linea_id, b.linea_id)
-                if clave not in transbordos or opt.total_minutes < transbordos[clave].total_minutes:
-                    transbordos[clave] = opt
-        opciones.extend(transbordos.values())
+            transbordos = {}  # (linea_a, linea_b) -> mejor TripOption por tiempo
+            for a in cerca_origen:
+                for b in cerca_destino:
+                    if a.id == b.id or a.linea_id == b.linea_id:
+                        continue
+                    opt = _transfer_option(a, b, origin_lat, origin_lng, dest_lat, dest_lng)
+                    if not opt:
+                        continue
+                    clave = (a.linea_id, b.linea_id)
+                    if clave not in transbordos or opt.total_minutes < transbordos[clave].total_minutes:
+                        transbordos[clave] = opt
+            opciones.extend(transbordos.values())
 
         if opciones:
             opciones.sort(key=lambda o: o.total_minutes)

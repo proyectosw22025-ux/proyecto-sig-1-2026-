@@ -18,7 +18,9 @@ import {
   X,
   Star,
   Loader2,
-  AlertTriangle
+  AlertTriangle,
+  ArrowUpNarrowWide,
+  ArrowDownNarrowWide
 } from 'lucide-react';
 import { graphqlService } from './services/graphql';
 import { geocodeAddress } from './services/geocoding';
@@ -125,6 +127,14 @@ function saveFavorites(key: string, ids: string[]) {
   }
 }
 
+// Extrae el número de línea del nombre (ej. "Línea 72 (Ida)" -> 72,
+// "Línea 16 Azul (Vuelta)" -> 16) para poder ordenar numéricamente.
+// Si no encuentra ningún número, la manda al final del listado.
+function routeNumber(route: RouteType): number {
+  const match = route.name.match(/(\d+)/);
+  return match ? parseInt(match[1], 10) : Number.MAX_SAFE_INTEGER;
+}
+
 // Formatea minutos a "X min" o "Xh Ym" para mostrar tiempos de viaje
 function formatMinutes(min: number): string {
   const m = Math.round(min);
@@ -176,6 +186,8 @@ export default function App() {
   const [favRoutes, setFavRoutes] = useState<string[]>(() => loadFavorites('favRoutes'));
   // Filtrar el listado para mostrar solo los favoritos (aplica a la pestaña activa)
   const [onlyFavorites, setOnlyFavorites] = useState(false);
+  // Orden de la lista de líneas por número: null = orden original (por código)
+  const [routeSort, setRouteSort] = useState<'asc' | 'desc' | null>(null);
 
   // Filtros de visualización (aplican en ambas pestañas y a cualquier ruta
   // visible, venga de "Mostrar todas", una línea individual o una parada
@@ -1098,6 +1110,22 @@ export default function App() {
               Parada más cercana
             </button>
 
+            {/* Resultado inmediato: nombre + distancia en metros/km, justo debajo del botón */}
+            {closestStop && closestStop.distance != null && (
+              <div style={{
+                fontSize: 12, display: 'flex', alignItems: 'center', gap: 6,
+                color: 'var(--success, #10b981)', fontWeight: 600,
+              }}>
+                <MapPin size={13} style={{ flexShrink: 0 }} />
+                <span>
+                  {closestStop.name} — a{' '}
+                  {closestStop.distance >= 1000
+                    ? `${(closestStop.distance / 1000).toFixed(2)} km`
+                    : `${Math.round(closestStop.distance)} m`}
+                </span>
+              </div>
+            )}
+
             {/* Destino: dirección escrita o marcado en el mapa */}
             <form onSubmit={handleGeocode} style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
               <div style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -1252,6 +1280,19 @@ export default function App() {
                     <Star size={13} /> {favRoutes.length}
                   </button>
                   <button
+                    className="action-btn secondary"
+                    style={{ padding: '4px 10px', fontSize: 11 }}
+                    onClick={() => setRouteSort((prev) => prev === 'asc' ? 'desc' : prev === 'desc' ? null : 'asc')}
+                    title={
+                      routeSort === 'asc' ? 'Ordenando por número ascendente (toca para descendente)'
+                      : routeSort === 'desc' ? 'Ordenando por número descendente (toca para quitar el orden)'
+                      : 'Ordenar líneas por número'
+                    }
+                  >
+                    {routeSort === 'desc' ? <ArrowDownNarrowWide size={13} /> : <ArrowUpNarrowWide size={13} />}
+                    {routeSort === 'asc' ? 'Nº ↑' : routeSort === 'desc' ? 'Nº ↓' : 'Ordenar Nº'}
+                  </button>
+                  <button
                     className="action-btn"
                     style={{ padding: '4px 10px', fontSize: 11 }}
                     onClick={showAllRoutes}
@@ -1324,7 +1365,12 @@ export default function App() {
                 })()
               ) : (
                 (() => {
-                  const lista = onlyFavorites ? routes.filter((r) => favRoutes.includes(r.id)) : routes;
+                  let lista = onlyFavorites ? routes.filter((r) => favRoutes.includes(r.id)) : routes;
+                  if (routeSort) {
+                    lista = [...lista].sort((a, b) =>
+                      routeSort === 'asc' ? routeNumber(a) - routeNumber(b) : routeNumber(b) - routeNumber(a)
+                    );
+                  }
                   if (lista.length === 0) {
                     return <p style={{ fontSize: 11, color: 'var(--text-muted, #94a3b8)', padding: '8px 2px' }}>
                       {onlyFavorites ? 'No tienes líneas favoritas. Toca la ⭐ de una línea para guardarla.' : 'Sin líneas.'}
