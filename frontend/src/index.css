@@ -456,29 +456,66 @@ body, html, #root {
   color: var(--warning);
 }
 
-/* Responsive: en pantallas chicas el mapa arriba y el panel abajo */
+/* Tirador del bottom-sheet: oculto en escritorio, visible solo en móvil */
+.sheet-handle {
+  display: none;
+}
+
+/* Responsive: en móvil el mapa ocupa toda la pantalla y el panel es un
+   bottom-sheet que se desliza desde abajo (peek -> expandido). */
 @media (max-width: 768px) {
   .app-container {
-    flex-direction: column-reverse;
+    flex-direction: column;
+  }
+  /* El mapa ocupa todo; el sheet se superpone abajo */
+  .map-container {
+    height: 100vh;
+    width: 100%;
   }
   .sidebar {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
     width: 100%;
-    height: 55vh;
+    height: 40vh;                 /* asomado (peek) */
     border-right: none;
     border-top: 1px solid var(--border-color);
+    border-radius: 20px 20px 0 0;
+    box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.25);
+    transition: height 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+    z-index: 1200;
+  }
+  .sidebar.sheet-expanded {
+    height: 90vh;                 /* expandido */
+  }
+  /* Tirador visible y "agarrable" */
+  .sheet-handle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 10px 0 4px;
+    cursor: grab;
+    touch-action: none;           /* el gesto lo maneja nuestro handler, no el scroll */
+    flex-shrink: 0;
+  }
+  .sheet-handle-bar {
+    width: 42px;
+    height: 5px;
+    border-radius: 3px;
+    background: var(--text-muted, #94a3b8);
+    opacity: 0.6;
+  }
+  .sidebar-header {
+    padding-top: 6px;
   }
   .sidebar-content {
     padding: 16px;
     gap: 14px;
   }
-  .map-container {
-    height: 45vh;
-  }
-  /* La cabecera de cada sección se apila para no desbordar en móvil */
   .item-name {
     font-size: 13px;
   }
-  /* Los grupos de botones (Mostrar todas / Ocultar / favoritos) hacen wrap */
   .section-title {
     font-size: 15px;
   }

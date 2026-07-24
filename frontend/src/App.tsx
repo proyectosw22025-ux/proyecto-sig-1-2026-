@@ -20,7 +20,10 @@ import {
   Loader2,
   AlertTriangle,
   ArrowUpNarrowWide,
-  ArrowDownNarrowWide
+  ArrowDownNarrowWide,
+  LocateFixed,
+  Share2,
+  History
 } from 'lucide-react';
 import { graphqlService } from './services/graphql';
 import { geocodeAddress } from './services/geocoding';
@@ -127,6 +130,34 @@ function saveFavorites(key: string, ids: string[]) {
   }
 }
 
+// Un viaje guardado en el historial (origen y destino + una etiqueta legible)
+interface TripHistoryItem {
+  oLat: number; oLng: number;
+  dLat: number; dLng: number;
+  label: string;   // texto para mostrar en la lista (ej. la dirección de destino)
+}
+
+const TRIP_HISTORY_KEY = 'tripHistory';
+const TRIP_HISTORY_MAX = 6;
+
+function loadTripHistory(): TripHistoryItem[] {
+  try {
+    const raw = localStorage.getItem(TRIP_HISTORY_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveTripHistory(items: TripHistoryItem[]) {
+  try {
+    localStorage.setItem(TRIP_HISTORY_KEY, JSON.stringify(items));
+  } catch {
+    /* localStorage no disponible: el historial no persiste, sin romper la app */
+  }
+}
+
 // Extrae el número de línea del nombre (ej. "Línea 72 (Ida)" -> 72,
 // "Línea 16 Azul (Vuelta)" -> 16) para poder ordenar numéricamente.
 // Si no encuentra ningún número, la manda al final del listado.
@@ -174,8 +205,17 @@ export default function App() {
   const [geocoding, setGeocoding] = useState(false);
   const [geocodeError, setGeocodeError] = useState<string | null>(null);
 
+  // Geolocalización (GPS) para fijar el origen
+  const [geoLoading, setGeoLoading] = useState(false);
+  const [geoError, setGeoError] = useState<string | null>(null);
+
   // Mostrar/ocultar la caja de instrucciones del mapa
   const [showInstructions, setShowInstructions] = useState(true);
+
+  // Bottom-sheet en móvil: el panel arranca "asomado" (peek) y se expande al
+  // tocar/arrastrar el tirador. Sin efecto en escritorio (el CSS lo ignora).
+  const [sheetExpanded, setSheetExpanded] = useState(false);
+  const dragStartYRef = useRef<number | null>(null);
 
   // Carga inicial de datos: spinner + error visible si el backend no responde
   const [dataLoading, setDataLoading] = useState(true);
@@ -184,6 +224,8 @@ export default function App() {
   // Favoritos: IDs de paradas y líneas guardados en localStorage (sin login)
   const [favStops, setFavStops] = useState<string[]>(() => loadFavorites('favStops'));
   const [favRoutes, setFavRoutes] = useState<string[]>(() => loadFavorites('favRoutes'));
+  // Historial de viajes recientes (origen/destino) en localStorage
+  const [tripHistory, setTripHistory] = useState<TripHistoryItem[]>(() => loadTripHistory());
   // Filtrar el listado para mostrar solo los favoritos (aplica a la pestaña activa)
   const [onlyFavorites, setOnlyFavorites] = useState(false);
   // Orden de la lista de líneas por número: null = orden original (por código)
@@ -331,9 +373,10 @@ export default function App() {
     visibleStopsRef.current = visibleStops;
   }, [visibleStops]);
 
-  // Persistir favoritos en localStorage cada vez que cambian
+  // Persistir favoritos e historial en localStorage cada vez que cambian
   useEffect(() => { saveFavorites('favStops', favStops); }, [favStops]);
   useEffect(() => { saveFavorites('favRoutes', favRoutes); }, [favRoutes]);
+  useEffect(() => { saveTripHistory(tripHistory); }, [tripHistory]);
 
   // Carga inicial de datos desde GraphQL
   const fetchData = async () => {
@@ -820,6 +863,35 @@ export default function App() {
     placeMarker(destMarkerRef, lat, lng, '#ef4444', 'Destino');
   };
 
+  // Fija el ORIGEN con el GPS del dispositivo (navigator.geolocation).
+  // En web requiere HTTPS (los navegadores bloquean el GPS en http, salvo
+  // localhost); en la app empaquetada (APK) funciona directo.
+  const useMyLocation = () => {
+    if (!navigator.geolocation) {
+      setGeoError('Tu dispositivo o navegador no permite geolocalización.');
+      return;
+    }
+    setGeoLoading(true);
+    setGeoError(null);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { latitude, longitude } = pos.coords;
+        setOrigin(latitude, longitude);
+        mapRef.current?.setView([latitude, longitude], 16);
+        setGeoLoading(false);
+      },
+      (err) => {
+        setGeoLoading(false);
+        setGeoError(
+          err.code === err.PERMISSION_DENIED
+            ? 'Permiso de ubicación denegado. Actívalo o marca el origen en el mapa.'
+            : 'No se pudo obtener tu ubicación. Marca el origen en el mapa.'
+        );
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+  };
+
   // Click en el mapa: solo marca origen o destino (según el modo). No hace nada más.
   const handleMapClick = (lat: number, lng: number) => {
     if (clickModeRef.current === 'destination') {
@@ -915,23 +987,62 @@ export default function App() {
       return;
     }
 
-    // Planificar el viaje (opciones directas y con transbordo, con tiempos)
+    const label = addressQuery.trim() || `Destino ${dest[0].toFixed(4)}, ${dest[1].toFixed(4)}`;
+    await runPlanTrip(originCoords[0], originCoords[1], dest[0], dest[1], label);
+  };
+
+  // Núcleo del planificador: consulta planTrip, muestra resultados, ajusta la
+  // vista y guarda el viaje en el historial. Lo usan el formulario y "repetir".
+  const runPlanTrip = async (oLat: number, oLng: number, dLat: number, dLng: number, label: string) => {
     setTripLoading(true);
     setTripOptions(null);
     try {
-      const [oLat, oLng] = originCoords;
-      const [dLat, dLng] = dest;
       const results: TripOption[] = await graphqlService.planTrip(oLat, oLng, dLat, dLng);
       setTripOptions(results);
-      const map = mapRef.current;
-      if (map) {
-        map.fitBounds(L.latLngBounds([[oLat, oLng], [dLat, dLng]]), { padding: [80, 80] });
-      }
+      mapRef.current?.fitBounds(L.latLngBounds([[oLat, oLng], [dLat, dLng]]), { padding: [80, 80] });
+
+      // Agregar al historial (sin duplicar el mismo origen->destino aproximado)
+      const nuevo: TripHistoryItem = { oLat, oLng, dLat, dLng, label };
+      const clave = (t: TripHistoryItem) =>
+        `${t.oLat.toFixed(3)},${t.oLng.toFixed(3)}->${t.dLat.toFixed(3)},${t.dLng.toFixed(3)}`;
+      setTripHistory((prev) =>
+        [nuevo, ...prev.filter((t) => clave(t) !== clave(nuevo))].slice(0, TRIP_HISTORY_MAX)
+      );
     } catch (err) {
       console.error('Error planificando el viaje:', err);
       setTripError('Error planificando el viaje. Reintenta.');
     } finally {
       setTripLoading(false);
+    }
+  };
+
+  // Repetir un viaje del historial: recoloca origen/destino y vuelve a planificar
+  const replayTrip = (t: TripHistoryItem) => {
+    setTripError(null);
+    setOrigin(t.oLat, t.oLng);
+    setDestination(t.dLat, t.dLng);
+    runPlanTrip(t.oLat, t.oLng, t.dLat, t.dLng, t.label);
+  };
+
+  // Compartir una opción de viaje como texto (Web Share API en móvil/APK;
+  // si no está disponible, copia al portapapeles).
+  const shareTripOption = async (opt: TripOption) => {
+    const lineas = opt.legs
+      .map((leg) => `🚌 ${leg.route.name}: sube en ${leg.boardStop.name}, baja en ${leg.alightStop.name} (~${formatMinutes(leg.rideMinutes)})`)
+      .join('\n');
+    const texto =
+      `Cómo llegar en micro (Santa Cruz):\n${lineas}\n` +
+      `🚶 A pie ~${formatMinutes(opt.walkMinutes)} · ⏱️ Total ~${formatMinutes(opt.totalMinutes)}` +
+      (opt.transfers > 0 ? `\n(${opt.transfers} transbordo)` : '');
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: 'Viaje en micro — Visor SIG', text: texto });
+      } else {
+        await navigator.clipboard.writeText(texto);
+        alert('Viaje copiado al portapapeles. Ya puedes pegarlo en WhatsApp.');
+      }
+    } catch {
+      /* el usuario canceló el diálogo de compartir: no es un error */
     }
   };
 
@@ -984,8 +1095,24 @@ export default function App() {
 
   return (
     <div className="app-container">
-      {/* 1. Panel Lateral */}
-      <aside className="sidebar">
+      {/* 1. Panel Lateral (en móvil funciona como bottom-sheet deslizable) */}
+      <aside className={`sidebar ${sheetExpanded ? 'sheet-expanded' : ''}`}>
+        {/* Tirador: solo visible en móvil (CSS). Toca o arrastra para expandir/colapsar */}
+        <div
+          className="sheet-handle"
+          onClick={() => setSheetExpanded((v) => !v)}
+          onPointerDown={(e) => { dragStartYRef.current = e.clientY; }}
+          onPointerUp={(e) => {
+            const start = dragStartYRef.current;
+            dragStartYRef.current = null;
+            if (start == null) return;
+            const dy = e.clientY - start;
+            if (dy < -30) setSheetExpanded(true);       // arrastró hacia arriba
+            else if (dy > 30) setSheetExpanded(false);  // arrastró hacia abajo
+          }}
+        >
+          <span className="sheet-handle-bar" />
+        </div>
         <header className="sidebar-header">
           <div className="brand">
             <div className="brand-icon">
@@ -1101,11 +1228,19 @@ export default function App() {
               <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#ef4444', display: 'inline-block' }}></span>
               <strong>Origen:</strong>
               <span style={{ color: 'var(--text-secondary)' }}>
-                {originCoords ? `${originCoords[0].toFixed(4)}, ${originCoords[1].toFixed(4)}` : 'haz click en el mapa'}
+                {originCoords ? `${originCoords[0].toFixed(4)}, ${originCoords[1].toFixed(4)}` : 'usa tu ubicación o el mapa'}
               </span>
             </div>
 
-            <button className="action-btn" onClick={findClosestStop}>
+            <button className="action-btn" onClick={useMyLocation} disabled={geoLoading}>
+              {geoLoading ? <Loader2 size={16} className="spin" /> : <LocateFixed size={16} />}
+              {geoLoading ? 'Ubicando…' : 'Usar mi ubicación'}
+            </button>
+            {geoError && (
+              <span style={{ fontSize: 11, color: 'var(--danger, #ef4444)' }}>{geoError}</span>
+            )}
+
+            <button className="action-btn secondary" onClick={findClosestStop}>
               <Navigation size={16} />
               Parada más cercana
             </button>
@@ -1123,6 +1258,37 @@ export default function App() {
                     ? `${(closestStop.distance / 1000).toFixed(2)} km`
                     : `${Math.round(closestStop.distance)} m`}
                 </span>
+              </div>
+            )}
+
+            {/* Viajes recientes: un toque para repetir origen -> destino */}
+            {tripHistory.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <History size={12} /> Viajes recientes
+                  </span>
+                  <button
+                    className="fav-btn"
+                    style={{ fontSize: 10, color: 'var(--text-muted)' }}
+                    onClick={() => setTripHistory([])}
+                    title="Borrar historial"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+                {tripHistory.map((t, i) => (
+                  <button
+                    key={i}
+                    className="action-btn secondary"
+                    style={{ padding: '5px 10px', fontSize: 11, justifyContent: 'flex-start', gap: 6 }}
+                    onClick={() => replayTrip(t)}
+                    title="Repetir este viaje"
+                  >
+                    <History size={13} style={{ flexShrink: 0 }} />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.label}</span>
+                  </button>
+                ))}
               </div>
             )}
 
@@ -1188,18 +1354,27 @@ export default function App() {
                     style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6, cursor: 'pointer' }}
                     onClick={() => showTripOption(opt)}
                   >
-                    {/* Cabecera: tiempo total + badge de transbordo */}
+                    {/* Cabecera: tiempo total + badge de transbordo + compartir */}
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                       <span style={{ fontSize: 14, fontWeight: 700 }}>
                         ~{formatMinutes(opt.totalMinutes)}
                       </span>
-                      <span style={{
-                        fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 10,
-                        background: opt.transfers === 0 ? 'var(--primary)' : 'var(--warning, #f59e0b)',
-                        color: 'white',
-                      }}>
-                        {opt.transfers === 0 ? 'Directo' : `${opt.transfers} transbordo`}
-                      </span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{
+                          fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 10,
+                          background: opt.transfers === 0 ? 'var(--primary)' : 'var(--warning, #f59e0b)',
+                          color: 'white',
+                        }}>
+                          {opt.transfers === 0 ? 'Directo' : `${opt.transfers} transbordo`}
+                        </span>
+                        <button
+                          className="fav-btn"
+                          onClick={(e) => { e.stopPropagation(); shareTripOption(opt); }}
+                          title="Compartir este viaje"
+                        >
+                          <Share2 size={15} />
+                        </button>
+                      </div>
                     </div>
 
                     {/* Tramos (líneas) con las paradas de subida/bajada */}
