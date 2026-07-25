@@ -134,7 +134,10 @@ class Command(BaseCommand):
             self._crear_paradas(stop_nodes)
             self._crear_lineas_y_rutas(route_names, geometries, sentidos)
             vinculos = self._vincular_por_cercania()
-            renombradas, borradas = self._nombrar_sin_nombre()
+            # Una parada por la que no pasa NINGUNA línea no sirve en el mapa:
+            # se borra (tenga o no nombre). Debe ir ANTES del renombrado.
+            borradas = self._borrar_paradas_sin_lineas()
+            renombradas = self._nombrar_sin_nombre()
 
         self.stdout.write(self.style.SUCCESS(
             f"Importación completa: {LineaMicro.objects.count()} líneas, "
@@ -142,8 +145,8 @@ class Command(BaseCommand):
             f"{vinculos} vínculos ruta-parada."))
         if renombradas or borradas:
             self.stdout.write(
-                f"Paradas sin nombre en OSM: {renombradas} renombradas por sus líneas, "
-                f"{borradas} borradas (sin ninguna línea).")
+                f"Limpieza de paradas: {borradas} borradas (0 líneas pasan por ahí), "
+                f"{renombradas} sin nombre renombradas por sus líneas.")
 
     # -----------------------------------------------------------------
     # HTTP
@@ -294,19 +297,25 @@ class Command(BaseCommand):
         return total_vinculos
 
     # -----------------------------------------------------------------
-    # Nombres amigables para las paradas que en OSM no tenían nombre
+    # Limpieza y nombres de paradas
     # -----------------------------------------------------------------
+
+    def _borrar_paradas_sin_lineas(self):
+        """Borra las paradas por las que no pasa ninguna línea (sin vínculos)."""
+        huerfanas = Parada.objects.filter(ruta_paradas__isnull=True)
+        borradas = huerfanas.count()
+        huerfanas.delete()
+        return borradas
 
     def _nombrar_sin_nombre(self):
         """
-        Las paradas OSM sin `name` quedaron con un marcador temporal. Aquí:
-          - las que tienen líneas -> "Parada Línea X" (o "Parada Líneas X, Y")
-            usando las líneas distintas que pasan por ellas;
-          - las que NO tienen ninguna línea (paradas OSM lejos de todo trazado,
-            ruido en el mapa) -> se borran.
-        Devuelve (renombradas, borradas).
+        Renombra las paradas OSM que no tenían `name` (quedaron con un marcador
+        temporal) a "Parada Línea X" / "Parada Líneas X, Y" según las líneas
+        distintas que pasan por ellas. Se ejecuta DESPUÉS de borrar las que no
+        tienen ninguna línea, así que aquí todas tienen al menos una.
+        Devuelve la cantidad de paradas renombradas.
         """
-        renombradas = borradas = 0
+        renombradas = 0
         sin_nombre = Parada.objects.filter(nombre__startswith=self.SIN_NOMBRE_PREFIX)
         for parada in sin_nombre:
             codigos = list(
@@ -314,9 +323,7 @@ class Command(BaseCommand):
                 .distinct().order_by('codigo').values_list('codigo', flat=True)
             )
             if not codigos:
-                parada.delete()
-                borradas += 1
-                continue
+                continue  # no debería pasar (ya se borraron las de 0 líneas)
             if len(codigos) == 1:
                 parada.nombre = f"Parada Línea {codigos[0]}"
             else:
@@ -325,4 +332,4 @@ class Command(BaseCommand):
                 parada.nombre = f"Parada Líneas {mostrados}{extra}"
             parada.save(update_fields=["nombre"])
             renombradas += 1
-        return renombradas, borradas
+        return renombradas
