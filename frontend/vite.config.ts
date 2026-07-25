@@ -26,9 +26,14 @@ export default defineConfig({
         display: 'standalone',
         start_url: '/',
         lang: 'es',
+        // Android (y las herramientas que empaquetan la PWA como APK) exigen
+        // PNG de 192 y 512; con solo SVG rechazan el manifest. El "maskable"
+        // lleva mas margen porque el sistema lo recorta a un circulo.
         icons: [
+          { src: 'icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: 'icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+          { src: 'icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
           { src: 'favicon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
-          { src: 'favicon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'maskable' },
         ],
       },
       workbox: {
