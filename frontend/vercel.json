@@ -2,8 +2,16 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [
     {
-      "source": "/graphql/:path*",
-      "destination": "https://backend-production-1166.up.railway.app/graphql/:path*"
+      "source": "/graphql",
+      "destination": "https://backend-production-1166.up.railway.app/graphql/"
+    },
+    {
+      "source": "/graphql/",
+      "destination": "https://backend-production-1166.up.railway.app/graphql/"
+    },
+    {
+      "source": "/graphql/(.*)",
+      "destination": "https://backend-production-1166.up.railway.app/graphql/$1"
     }
   ]
 }
