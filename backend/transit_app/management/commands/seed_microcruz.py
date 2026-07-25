@@ -134,11 +134,16 @@ class Command(BaseCommand):
             self._crear_paradas(stop_nodes)
             self._crear_lineas_y_rutas(route_names, geometries, sentidos)
             vinculos = self._vincular_por_cercania()
+            renombradas, borradas = self._nombrar_sin_nombre()
 
         self.stdout.write(self.style.SUCCESS(
             f"Importación completa: {LineaMicro.objects.count()} líneas, "
             f"{Ruta.objects.count()} rutas, {Parada.objects.count()} paradas, "
             f"{vinculos} vínculos ruta-parada."))
+        if renombradas or borradas:
+            self.stdout.write(
+                f"Paradas sin nombre en OSM: {renombradas} renombradas por sus líneas, "
+                f"{borradas} borradas (sin ninguna línea).")
 
     # -----------------------------------------------------------------
     # HTTP
@@ -171,6 +176,10 @@ class Command(BaseCommand):
     # Paradas (nodos OSM reales)
     # -----------------------------------------------------------------
 
+    # Prefijo temporal para paradas SIN nombre en OSM; luego se reemplaza por
+    # un nombre derivado de las líneas que pasan (ver _nombrar_sin_nombre).
+    SIN_NOMBRE_PREFIX = "__sin_nombre__"
+
     def _crear_paradas(self, stop_nodes):
         nuevas = []
         vistos = set()
@@ -179,7 +188,9 @@ class Command(BaseCommand):
             if osm_id in vistos:
                 continue
             vistos.add(osm_id)
-            nombre = node.get("tags", {}).get("name") or f"Parada OSM {osm_id}"
+            nombre = node.get("tags", {}).get("name")
+            # Sin nombre en OSM -> marcador temporal (no el id crudo, que parece código)
+            nombre = nombre or f"{self.SIN_NOMBRE_PREFIX}{osm_id}"
             nuevas.append(Parada(
                 nombre=nombre[:200], codigo=str(osm_id),
                 geom=Point(node["lon"], node["lat"], srid=4326),
@@ -281,3 +292,37 @@ class Command(BaseCommand):
                 RutaParada.objects.create(ruta=ruta, parada=parada, orden=orden)
                 total_vinculos += 1
         return total_vinculos
+
+    # -----------------------------------------------------------------
+    # Nombres amigables para las paradas que en OSM no tenían nombre
+    # -----------------------------------------------------------------
+
+    def _nombrar_sin_nombre(self):
+        """
+        Las paradas OSM sin `name` quedaron con un marcador temporal. Aquí:
+          - las que tienen líneas -> "Parada Línea X" (o "Parada Líneas X, Y")
+            usando las líneas distintas que pasan por ellas;
+          - las que NO tienen ninguna línea (paradas OSM lejos de todo trazado,
+            ruido en el mapa) -> se borran.
+        Devuelve (renombradas, borradas).
+        """
+        renombradas = borradas = 0
+        sin_nombre = Parada.objects.filter(nombre__startswith=self.SIN_NOMBRE_PREFIX)
+        for parada in sin_nombre:
+            codigos = list(
+                LineaMicro.objects.filter(rutas__paradas__id=parada.id)
+                .distinct().order_by('codigo').values_list('codigo', flat=True)
+            )
+            if not codigos:
+                parada.delete()
+                borradas += 1
+                continue
+            if len(codigos) == 1:
+                parada.nombre = f"Parada Línea {codigos[0]}"
+            else:
+                mostrados = ", ".join(codigos[:3])
+                extra = f" +{len(codigos) - 3}" if len(codigos) > 3 else ""
+                parada.nombre = f"Parada Líneas {mostrados}{extra}"
+            parada.save(update_fields=["nombre"])
+            renombradas += 1
+        return renombradas, borradas
