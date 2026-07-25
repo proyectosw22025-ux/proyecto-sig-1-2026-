@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 import os
 import glob
 
@@ -42,10 +43,16 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-)izx#nibm!i$56z-nl*a%5o_0gcm)-w4f4_32xz%%xc3dp)qej'
+# En producción (Railway) se pasa SECRET_KEY por variable de entorno; el valor
+# de abajo queda solo como fallback para desarrollo local.
+SECRET_KEY = os.environ.get(
+    'SECRET_KEY',
+    'django-insecure-)izx#nibm!i$56z-nl*a%5o_0gcm)-w4f4_32xz%%xc3dp)qej',
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# En local queda en True; en Railway se define DEBUG=False.
+DEBUG = os.environ.get('DEBUG', 'True').lower() not in ('false', '0', 'no')
 
 # Hosts permitidos. En local queda vacío (Django con DEBUG acepta localhost).
 # En el VPS se pasa ALLOWED_HOSTS por variable de entorno (ej. "*" o la IP)
@@ -69,6 +76,8 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    # Sirve los archivos estáticos ya recolectados cuando DEBUG=False (Railway)
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',  # Debe colocarse antes de CommonMiddleware
     'django.middleware.common.CommonMiddleware',
@@ -101,14 +110,34 @@ WSGI_APPLICATION = 'transit_project.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.contrib.gis.db.backends.postgis',       # Motor de base de datos PostGIS
+# Railway (y la mayoría de PaaS) entregan las credenciales en una sola variable
+# DATABASE_URL con formato postgres://usuario:clave@host:puerto/base. Si existe,
+# se usa esa; si no, se cae a las variables sueltas de siempre (local/Docker).
+_DATABASE_URL = os.environ.get('DATABASE_URL')
+
+if _DATABASE_URL:
+    _url = urlparse(_DATABASE_URL)
+    _db_config = {
+        'NAME': unquote(_url.path.lstrip('/')),
+        'USER': unquote(_url.username or ''),
+        'PASSWORD': unquote(_url.password or ''),
+        'HOST': _url.hostname or '',
+        'PORT': str(_url.port or 5432),
+    }
+else:
+    _db_config = {
         'NAME': os.environ.get('DB_NAME', 'transporte_db'),       # Nombre de la base de datos
         'USER': os.environ.get('DB_USER', 'postgres'),            # Usuario por defecto de PostgreSQL
         'PASSWORD': os.environ.get('DB_PASSWORD', '84261704'),    # Contraseña de PostgreSQL
         'HOST': os.environ.get('DB_HOST', 'localhost'),           # 'db' cuando corre en Docker
         'PORT': os.environ.get('DB_PORT', '5432'),
+    }
+
+DATABASES = {
+    'default': {
+        # Motor PostGIS: obligatorio para los campos geométricos de GeoDjango
+        'ENGINE': 'django.contrib.gis.db.backends.postgis',
+        **_db_config,
     }
 }
 
@@ -148,9 +177,29 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+# Destino de collectstatic. Necesario con DEBUG=False para que el admin de
+# Django conserve sus estilos; WhiteNoise los sirve sin necesitar Nginx.
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+STORAGES = {
+    'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+    'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage'},
+}
 
-# Configuración de CORS para desarrollo local
-CORS_ALLOW_ALL_ORIGINS = True
-CSRF_TRUSTED_ORIGINS = ['http://localhost:5173', 'http://localhost:5174']
+# CORS: en local se permite todo. En producción el frontend (Vercel) llama a
+# /graphql/ del MISMO origen gracias al rewrite de vercel.json, así que no hay
+# petición cross-origin; aun así se pueden declarar orígenes extra por env.
+CORS_ALLOW_ALL_ORIGINS = os.environ.get('CORS_ALLOW_ALL', 'True').lower() not in ('false', '0', 'no')
+CORS_ALLOWED_ORIGINS = [o for o in os.environ.get('CORS_ALLOWED_ORIGINS', '').split(',') if o]
+
+# Orígenes de confianza para CSRF: los de local más los que se pasen por env
+# (ej. https://mi-proyecto.vercel.app,https://mi-backend.up.railway.app).
+CSRF_TRUSTED_ORIGINS = ['http://localhost:5173', 'http://localhost:5174'] + [
+    o for o in os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',') if o
+]
+
+# Railway/Vercel terminan el TLS en su proxy y hablan HTTP con el contenedor.
+# Sin esta cabecera Django creería que la petición es insegura y rechazaría
+# las comprobaciones CSRF de los orígenes https://.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'

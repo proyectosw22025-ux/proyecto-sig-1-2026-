@@ -3,3 +3,6 @@ strawberry-graphql[django]>=0.230.0
 psycopg2-binary>=2.9.9
 requests>=2.31.0
 django-cors-headers>=4.3.1
+# Producción (Railway): servidor WSGI y servidor de archivos estáticos
+gunicorn>=22.0.0
+whitenoise>=6.6.0
