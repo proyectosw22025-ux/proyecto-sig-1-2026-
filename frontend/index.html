@@ -3,9 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#3b82f6" />
     <meta name="description" content="Visor SIG del transporte público de Santa Cruz de la Sierra: paradas y líneas sobre un mapa interactivo." />
+
+    <!-- iOS no puede instalar el APK (es solo para Android), asi que en iPhone
+         la app se anade desde Safari con "Anadir a pantalla de inicio". Safari
+         ignora los iconos del manifest y usa apple-touch-icon: sin esta linea
+         pondria una miniatura de la pagina como icono. -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Visor SIG" />
     <title>Visor de Transporte Público - Santa Cruz (SIG)</title>
   </head>
   <body>
@@ -13,3 +22,4 @@
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
+
