@@ -16,6 +16,9 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
+      // El registro se hace a mano en src/main.tsx para poder comprobar si hay
+      // una versión nueva de forma periódica (ver allí el porqué).
+      injectRegister: false,
       includeAssets: ['favicon.svg'],
       manifest: {
         name: 'Visor SIG - Transporte Público Santa Cruz',
@@ -50,17 +53,13 @@ export default defineConfig({
               cacheableResponse: { statuses: [0, 200] },
             },
           },
-          {
-            // Respuestas del backend GraphQL: red primero, cae a caché si no hay conexión
-            urlPattern: /^http:\/\/localhost:8080\/graphql\/.*/i,
-            handler: 'NetworkFirst',
-            options: {
-              cacheName: 'graphql-api',
-              networkTimeoutSeconds: 5,
-              expiration: { maxEntries: 50, maxAgeSeconds: 60 * 60 * 24 },
-              cacheableResponse: { statuses: [0, 200] },
-            },
-          },
+          // NOTA: las respuestas de /graphql/ NO se cachean. El cliente consulta
+          // la API por POST y la Cache API del navegador solo admite GET
+          // (`Cache.put()` rechaza cualquier otro método), así que una regla de
+          // runtimeCaching aquí nunca llegaría a guardar nada. Consecuencia: sin
+          // conexión carga la interfaz y los tiles del mapa, pero no las paradas
+          // ni las líneas. Para servirlas offline habría que guardarlas por
+          // nuestra cuenta (p. ej. en IndexedDB) al recibirlas.
         ],
       },
       devOptions: {
