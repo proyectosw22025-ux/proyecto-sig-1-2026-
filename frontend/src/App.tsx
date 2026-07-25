@@ -1701,7 +1701,7 @@ export default function App() {
                 <X size={14} />
               </button>
               <strong style={{ display: 'block', marginBottom: '6px', paddingRight: 16 }}>
-                <Info size={12} style={{ verticalAlign: 'middle', marginRight: '4px' }} /> Cómo usar
+                <Info size={12} style={{ verticalAlign: 'middle', marginRight: '4px' }} /> CÓMO USAR
               </strong>
               <ol style={{ margin: 0, paddingLeft: 16, display: 'flex', flexDirection: 'column', gap: 4 }}>
                 <li>Haz click en el mapa para marcar tu <strong>punto de partida</strong>.</li>
