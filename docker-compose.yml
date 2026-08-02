@@ -10,10 +10,17 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      # El -h 127.0.0.1 es imprescindible: obliga a comprobar por TCP, que es
+      # como se conecta el backend. Sin él, pg_isready usa el socket Unix, que
+      # ya responde mientras Postgres se inicializa por primera vez (arranca un
+      # servidor temporal para crear la BD y la extensión PostGIS). El
+      # healthcheck daba OK antes de tiempo, el backend arrancaba, recibía
+      # "Connection refused" y moría; solo pasaba en el primer `up`, con el
+      # volumen vacío.
+      test: ["CMD-SHELL", "pg_isready -U postgres -h 127.0.0.1"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   backend:
     build: ./backend
@@ -37,6 +44,10 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # Red de seguridad: si el backend muere al arrancar (p. ej. porque la BD
+    # todavía no aceptaba conexiones), se reintenta en vez de quedarse caído y
+    # dejar el frontend respondiendo 502.
+    restart: on-failure
 
   frontend:
     build: ./frontend
