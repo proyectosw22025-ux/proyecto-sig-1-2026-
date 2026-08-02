@@ -10,6 +10,14 @@ frontend/dist/
 # Env / secrets
 .env
 .env.local
+.vercel/
+
+# Paquetes de la app Android generados con PWABuilder. Son binarios de 1 MB que
+# se regeneran cuando hagan falta, y el keystore es la llave de firma: si se
+# sube, cualquiera puede publicar actualizaciones falsas de la app.
+*.apk
+*.aab
+*.keystore
 
 # OS
 Thumbs.db
